@@ -1,0 +1,177 @@
+# MiroMem - Unified Docker Compose
+# Orchestrates: EverMemOS infra + MiroFish + MiroMem gateway
+
+services:
+  # ============================================================
+  # Infrastructure
+  # ============================================================
+
+  mongodb:
+    image: mongo:7.0
+    container_name: miromem-mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: miromem
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: miromem-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  elasticsearch:
+    image: elasticsearch:8.15.0
+    container_name: miromem-elasticsearch
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.16
+    container_name: miromem-etcd
+    restart: unless-stopped
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    command: >
+      etcd
+      -advertise-client-urls=http://127.0.0.1:2379
+      -listen-client-urls=http://0.0.0.0:2379
+      --data-dir=/etcd
+    volumes:
+      - etcd_data:/etcd
+
+  minio:
+    image: minio/minio:RELEASE.2023-03-20T20-16-18Z
+    container_name: miromem-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    command: minio server /minio_data --console-address ":9001"
+    volumes:
+      - minio_data:/minio_data
+
+  milvus-standalone:
+    image: milvusdb/milvus:v2.4.13-hotfix
+    container_name: miromem-milvus
+    restart: unless-stopped
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    depends_on:
+      - etcd
+      - minio
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    volumes:
+      - milvus_data:/var/lib/milvus
+
+  # ============================================================
+  # EverMemOS - Memory Operating System
+  # ============================================================
+
+  evermemos:
+    build:
+      context: ./vendor/EverMemOS
+      dockerfile: Dockerfile
+    container_name: miromem-evermemos
+    restart: unless-stopped
+    ports:
+      - "1995:1995"
+    volumes:
+      - ./config/evermemos.env:/app/.env:ro
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      milvus-standalone:
+        condition: service_started
+
+  # ============================================================
+  # MiroFish - Multi-Agent Prediction Engine
+  # ============================================================
+
+  mirofish:
+    build:
+      context: ./vendor/MiroFish
+      dockerfile: Dockerfile
+    container_name: miromem-mirofish
+    restart: unless-stopped
+    ports:
+      - "5002:5001"
+      - "5173:3000"
+    env_file:
+      - ./config/mirofish.env
+    depends_on:
+      - evermemos
+    volumes:
+      - mirofish_uploads:/app/uploads
+      - ./config/frontend.env:/app/frontend/.env:ro
+
+  # ============================================================
+  # MiroMem Gateway - Unified API Entry Point
+  # ============================================================
+
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: miromem-gateway
+    restart: unless-stopped
+    ports:
+      - "8080:8000"
+    env_file:
+      - .env
+    environment:
+      EVERMEMOS_HOST: evermemos
+      MIROFISH_HOST: mirofish
+      MONGODB_URI: mongodb://root:miromem@mongodb:27017
+    depends_on:
+      - evermemos
+      - mirofish
+
+volumes:
+  mongodb_data:
+  redis_data:
+  es_data:
+  etcd_data:
+  minio_data:
+  milvus_data:
+  mirofish_uploads:
