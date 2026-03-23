@@ -93,6 +93,7 @@
       <div class="action-controls">
         <button 
           class="action-btn primary"
+          data-testid="step3-report-button"
           :disabled="phase !== 2 || isGeneratingReport"
           @click="handleNextStep"
         >

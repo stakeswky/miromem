@@ -78,7 +78,7 @@
           </div>
 
           <!-- Profiles List Preview -->
-          <div v-if="profiles.length > 0" class="profiles-preview">
+          <div v-if="profiles.length > 0" class="profiles-preview" data-testid="step2-profiles-preview">
             <div class="preview-header">
               <span class="preview-title">已生成的 Agent 人设</span>
             </div>
@@ -134,7 +134,7 @@
           </p>
           
           <!-- Config Preview -->
-          <div v-if="simulationConfig" class="config-detail-panel">
+          <div v-if="simulationConfig" class="config-detail-panel" data-testid="step2-config-ready">
             <!-- 时间配置 -->
             <div class="config-block">
               <div class="config-grid">
@@ -518,6 +518,7 @@
             </button>
             <button 
               class="action-btn primary"
+              data-testid="step2-next-step"
               :disabled="phase < 4"
               @click="handleStartSimulation"
             >

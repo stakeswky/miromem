@@ -1,0 +1,26 @@
+{
+  "success": true,
+  "data": {
+    "project_id": "proj-test-001",
+    "graph_id": "graph-test-001",
+    "status": "graph_completed",
+    "ontology": {
+      "entity_types": [
+        {
+          "name": "Student",
+          "description": "Student entity"
+        },
+        {
+          "name": "Official",
+          "description": "Official entity"
+        }
+      ],
+      "edge_types": [
+        {
+          "name": "supports",
+          "description": "Support relation"
+        }
+      ]
+    }
+  }
+}

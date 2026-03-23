@@ -238,6 +238,50 @@ class SimulationConfigGenerator:
             api_key=self.api_key,
             base_url=self.base_url
         )
+
+    def _ensure_mapping(
+        self,
+        value: Any,
+        context: str,
+        fallback: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Normalize LLM output to a dict-like structure."""
+        if isinstance(value, dict):
+            return value
+        logger.warning(
+            "%s 返回了非对象结果: type=%s, value=%r",
+            context,
+            type(value).__name__,
+            value,
+        )
+        return dict(fallback or {})
+
+    def _coerce_mapping_list(self, value: Any, context: str) -> List[Dict[str, Any]]:
+        """Keep only dict items from a list-like LLM field."""
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            logger.warning(
+                "%s 返回了非数组结果: type=%s, value=%r",
+                context,
+                type(value).__name__,
+                value,
+            )
+            return []
+
+        normalized: List[Dict[str, Any]] = []
+        for idx, item in enumerate(value):
+            if isinstance(item, dict):
+                normalized.append(item)
+            else:
+                logger.warning(
+                    "%s[%d] 不是对象，已跳过: type=%s, value=%r",
+                    context,
+                    idx,
+                    type(item).__name__,
+                    item,
+                )
+        return normalized
     
     def generate_config(
         self,
@@ -294,13 +338,26 @@ class SimulationConfigGenerator:
         # ========== 步骤1: 生成时间配置 ==========
         report_progress(1, "生成时间配置...")
         num_entities = len(entities)
-        time_config_result = self._generate_time_config(context, num_entities)
+        time_config_result = self._ensure_mapping(
+            self._generate_time_config(context, num_entities),
+            "时间配置",
+            self._get_default_time_config(num_entities),
+        )
         time_config = self._parse_time_config(time_config_result, num_entities)
         reasoning_parts.append(f"时间配置: {time_config_result.get('reasoning', '成功')}")
         
         # ========== 步骤2: 生成事件配置 ==========
         report_progress(2, "生成事件配置和热点话题...")
-        event_config_result = self._generate_event_config(context, simulation_requirement, entities)
+        event_config_result = self._ensure_mapping(
+            self._generate_event_config(context, simulation_requirement, entities),
+            "事件配置",
+            {
+                "initial_posts": [],
+                "hot_topics": [],
+                "narrative_direction": "",
+                "reasoning": "使用默认配置",
+            },
+        )
         event_config = self._parse_event_config(event_config_result)
         reasoning_parts.append(f"事件配置: {event_config_result.get('reasoning', '成功')}")
         
@@ -608,6 +665,7 @@ class SimulationConfigGenerator:
     
     def _parse_time_config(self, result: Dict[str, Any], num_entities: int) -> TimeSimulationConfig:
         """解析时间配置结果，并验证agents_per_hour值不超过总agent数"""
+        result = self._ensure_mapping(result, "时间配置", self._get_default_time_config(num_entities))
         # 获取原始值
         agents_per_hour_min = result.get("agents_per_hour_min", max(1, num_entities // 15))
         agents_per_hour_max = result.get("agents_per_hour_max", max(5, num_entities // 5))
@@ -715,8 +773,17 @@ class SimulationConfigGenerator:
     
     def _parse_event_config(self, result: Dict[str, Any]) -> EventConfig:
         """解析事件配置结果"""
+        result = self._ensure_mapping(
+            result,
+            "事件配置",
+            {
+                "initial_posts": [],
+                "hot_topics": [],
+                "narrative_direction": "",
+            },
+        )
         return EventConfig(
-            initial_posts=result.get("initial_posts", []),
+            initial_posts=self._coerce_mapping_list(result.get("initial_posts", []), "initial_posts"),
             scheduled_events=[],
             hot_topics=result.get("hot_topics", []),
             narrative_direction=result.get("narrative_direction", "")
@@ -760,6 +827,13 @@ class SimulationConfigGenerator:
         
         updated_posts = []
         for post in event_config.initial_posts:
+            if not isinstance(post, dict):
+                logger.warning(
+                    "initial_posts 中存在非对象项，已跳过: type=%s, value=%r",
+                    type(post).__name__,
+                    post,
+                )
+                continue
             poster_type = post.get("poster_type", "").lower()
             content = post.get("content", "")
             
@@ -866,8 +940,18 @@ class SimulationConfigGenerator:
         system_prompt = "你是社交媒体行为分析专家。返回纯JSON，配置需符合中国人作息习惯。"
         
         try:
-            result = self._call_llm_with_retry(prompt, system_prompt)
-            llm_configs = {cfg["agent_id"]: cfg for cfg in result.get("agent_configs", [])}
+            result = self._ensure_mapping(
+                self._call_llm_with_retry(prompt, system_prompt),
+                "Agent配置批次",
+                {"agent_configs": []},
+            )
+            llm_configs = {}
+            for cfg in self._coerce_mapping_list(result.get("agent_configs", []), "agent_configs"):
+                agent_id = cfg.get("agent_id")
+                if agent_id is None:
+                    logger.warning("发现缺少 agent_id 的 Agent 配置，已跳过: %r", cfg)
+                    continue
+                llm_configs[agent_id] = cfg
         except Exception as e:
             logger.warning(f"Agent配置批次LLM生成失败: {e}, 使用规则生成")
             llm_configs = {}
@@ -879,7 +963,7 @@ class SimulationConfigGenerator:
             cfg = llm_configs.get(agent_id, {})
             
             # 如果LLM没有生成，使用规则生成
-            if not cfg:
+            if not isinstance(cfg, dict) or not cfg:
                 cfg = self._generate_agent_config_by_rule(entity)
             
             config = AgentActivityConfig(
@@ -984,4 +1068,3 @@ class SimulationConfigGenerator:
                 "influence_weight": 1.0
             }
     
-

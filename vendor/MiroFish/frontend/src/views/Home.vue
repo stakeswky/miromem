@@ -146,6 +146,7 @@
 
                 <div
                   class="upload-zone"
+                  data-testid="home-upload-zone"
                   :class="{ 'drag-over': isDragOver, 'has-files': files.length > 0 }"
                   @dragover.prevent="handleDragOver"
                   @dragleave.prevent="handleDragLeave"
@@ -192,6 +193,7 @@
                   <textarea
                     v-model="formData.simulationRequirement"
                     class="code-input"
+                    data-testid="home-prompt-input"
                     placeholder="// 用自然语言输入模拟或预测需求（例.武大若发布撤销肖某处分的公告，会引发什么舆情走向）"
                     rows="6"
                     :disabled="loading"
@@ -281,6 +283,7 @@
             <div class="console-section btn-section">
               <button
                 class="start-engine-btn"
+                data-testid="home-start-engine"
                 @click="startSimulation"
                 :disabled="!canSubmit || loading"
               >

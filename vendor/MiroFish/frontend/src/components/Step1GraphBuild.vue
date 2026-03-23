@@ -160,6 +160,7 @@
           <p class="description">图谱构建已完成，请进入下一步进行模拟环境搭建</p>
           <button 
             class="action-btn" 
+            data-testid="step1-create-simulation"
             :disabled="currentPhase < 2 || creatingSimulation"
             @click="handleEnterEnvSetup"
           >

@@ -1,0 +1,32 @@
+{
+  "success": true,
+  "data": {
+    "total_expected": 2,
+    "profiles": [
+      {
+        "username": "alice_123",
+        "name": "Alice",
+        "profession": "Student",
+        "bio": "A student closely following the incident.",
+        "interested_topics": ["Campus", "Policy"],
+        "age": 22,
+        "gender": "female",
+        "mbti": "INTJ",
+        "country": "中国",
+        "persona": "Alice is a highly engaged student participant."
+      },
+      {
+        "username": "office_001",
+        "name": "Campus Office",
+        "profession": "Official",
+        "bio": "Official campus communications account.",
+        "interested_topics": ["Statement", "Public Affairs"],
+        "age": 30,
+        "gender": "other",
+        "mbti": "ENTJ",
+        "country": "中国",
+        "persona": "This account represents the official public communication team."
+      }
+    ]
+  }
+}

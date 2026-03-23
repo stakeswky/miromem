@@ -1,0 +1,38 @@
+{
+  "success": true,
+  "data": {
+    "graph_id": "graph-test-001",
+    "node_count": 2,
+    "edge_count": 1,
+    "nodes": [
+      {
+        "uuid": "node-1",
+        "name": "Alice",
+        "labels": ["Entity", "Student"],
+        "summary": "Student participant",
+        "attributes": {
+          "school": "Test University"
+        }
+      },
+      {
+        "uuid": "node-2",
+        "name": "Office",
+        "labels": ["Entity", "Official"],
+        "summary": "Official account",
+        "attributes": {
+          "department": "Communications"
+        }
+      }
+    ],
+    "edges": [
+      {
+        "uuid": "edge-1",
+        "source_node_uuid": "node-1",
+        "target_node_uuid": "node-2",
+        "name": "supports",
+        "fact_type": "supports",
+        "fact": "Alice supports the office statement"
+      }
+    ]
+  }
+}

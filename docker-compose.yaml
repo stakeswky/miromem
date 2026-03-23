@@ -142,7 +142,7 @@ services:
     depends_on:
       - evermemos
     volumes:
-      - mirofish_uploads:/app/uploads
+      - mirofish_uploads:/app/backend/uploads
       - ./config/frontend.env:/app/frontend/.env:ro
 
   # ============================================================

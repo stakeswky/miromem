@@ -1,0 +1,41 @@
+name: Frontend E2E
+
+on:
+  pull_request:
+    paths:
+      - 'vendor/MiroFish/frontend/**'
+      - '.github/workflows/frontend-e2e.yml'
+  workflow_dispatch:
+
+jobs:
+  playwright:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: vendor/MiroFish/frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: vendor/MiroFish/frontend/package-lock.json
+
+      - name: Install frontend deps
+        run: npm ci
+
+      - name: Install Chromium
+        run: npx playwright install chromium
+
+      - name: Run mocked E2E suite
+        run: npx playwright test e2e/home-upload.spec.ts e2e/graph-build.spec.ts e2e/simulation-setup.spec.ts e2e/simulation-setup-error.spec.ts
+
+      - name: Upload Playwright artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-artifacts
+          path: |
+            vendor/MiroFish/frontend/test-results
+            vendor/MiroFish/frontend/playwright-report

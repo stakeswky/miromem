@@ -1,0 +1,38 @@
+[
+  {
+    "success": true,
+    "data": {
+      "status": "processing",
+      "progress": 45,
+      "message": "[2/4] 生成Agent人设: 1/2 - 正在生成...",
+      "progress_detail": {
+        "current_stage": "generating_profiles",
+        "current_stage_name": "生成Agent人设",
+        "stage_index": 2,
+        "total_stages": 4,
+        "stage_progress": 45,
+        "current_item": 1,
+        "total_items": 2,
+        "item_description": "正在生成..."
+      }
+    }
+  },
+  {
+    "success": true,
+    "data": {
+      "status": "completed",
+      "progress": 100,
+      "message": "[4/4] 完成: 环境搭建完成",
+      "progress_detail": {
+        "current_stage": "generating_config",
+        "current_stage_name": "生成模拟配置",
+        "stage_index": 4,
+        "total_stages": 4,
+        "stage_progress": 100,
+        "current_item": 3,
+        "total_items": 3,
+        "item_description": "配置生成完成"
+      }
+    }
+  }
+]
