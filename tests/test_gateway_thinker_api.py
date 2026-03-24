@@ -164,6 +164,31 @@ def test_create_thinker_job_accepts_upload_multipart_and_extracts_text():
     ]
 
 
+def test_create_thinker_job_rejects_upload_mode_without_evidence(monkeypatch):
+    def _unexpected_create_task(coro):
+        coro.close()
+        raise AssertionError("background task should not be scheduled without upload evidence")
+
+    monkeypatch.setattr(thinker_api.asyncio, "create_task", _unexpected_create_task)
+    client = _client()
+
+    response = client.post(
+        "/api/v1/thinker/jobs",
+        json={
+            "mode": "upload",
+            "research_direction": "Fed outlook",
+            "seed_text": "",
+            "uploaded_files": [],
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "detail": "upload mode requires non-empty seed_text or at least one uploaded file with text"
+    }
+    assert thinker_api._get_job_store()._jobs == {}
+
+
 def test_create_thinker_job_rejects_invalid_pdf_upload(monkeypatch):
     def _unexpected_create_task(coro):
         coro.close()

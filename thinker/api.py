@@ -252,6 +252,15 @@ def _validate_job_create_request(payload: Any) -> ThinkerJobCreateRequest:
         body = ThinkerJobCreateRequest.model_validate(payload)
     except ValidationError as exc:
         raise RequestValidationError(exc.errors()) from exc
+    if (
+        body.mode == "upload"
+        and not body.seed_text.strip()
+        and not any(file.text.strip() for file in body.uploaded_files)
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="upload mode requires non-empty seed_text or at least one uploaded file with text",
+        )
     if body.mode == "polymarket" and not body.polymarket_event:
         raise HTTPException(
             status_code=422,
