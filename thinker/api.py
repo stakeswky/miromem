@@ -18,6 +18,7 @@ _job_store: InMemoryThinkerJobStore | None = None
 _orchestrator: ThinkerOrchestrator | None = None
 
 ThinkerMode = Literal["topic_only", "upload", "polymarket"]
+_IMPLEMENTED_MODES: set[ThinkerMode] = {"topic_only"}
 
 
 def _get_job_store() -> InMemoryThinkerJobStore:
@@ -81,6 +82,12 @@ class ThinkerMaterializeResponse(BaseModel):
 
 @router.post("/jobs", response_model=ThinkerJobCreateResponse)
 async def create_job(body: ThinkerJobCreateRequest) -> ThinkerJobCreateResponse:
+    if body.mode not in _IMPLEMENTED_MODES:
+        raise HTTPException(
+            status_code=501,
+            detail=f"Thinker mode '{body.mode}' is not implemented yet",
+        )
+
     job = _get_job_store().create_job(
         mode=body.mode,
         research_direction=body.research_direction,

@@ -30,6 +30,47 @@ def test_failed_job_can_be_retried_but_succeeded_job_cannot():
         store.retry_job(completed.job_id)
 
 
+def test_retry_to_success_clears_failure_metadata():
+    store = InMemoryThinkerJobStore()
+    job = store.create_job(mode="topic_only", research_direction="Fed outlook")
+    expected_result = ThinkerResult(
+        expanded_topics=["Fed policy path"],
+        enriched_seed_text="Fed outlook seed",
+        suggested_simulation_prompt="Debate Fed policy path.",
+    )
+
+    store.mark_failed(
+        job.job_id,
+        error_code="upstream_error",
+        error_message="timeout",
+        retryable=False,
+        can_continue_without_thinker=False,
+    )
+
+    retried = store.retry_job(job.job_id)
+    running = store.mark_running(job.job_id)
+    succeeded = store.mark_succeeded(job.job_id, result=expected_result)
+
+    assert retried.status == "created"
+    assert retried.error_code is None
+    assert retried.error_message is None
+    assert retried.retryable is None
+    assert retried.can_continue_without_thinker is True
+
+    assert running.status == "running"
+    assert running.error_code is None
+    assert running.error_message is None
+    assert running.retryable is None
+    assert running.can_continue_without_thinker is True
+
+    assert succeeded.status == "succeeded"
+    assert succeeded.error_code is None
+    assert succeeded.error_message is None
+    assert succeeded.retryable is None
+    assert succeeded.can_continue_without_thinker is True
+    assert succeeded.result == expected_result
+
+
 def test_illegal_state_transition_raises_value_error():
     store = InMemoryThinkerJobStore()
     job = store.create_job(mode="topic_only", research_direction="Fed outlook")

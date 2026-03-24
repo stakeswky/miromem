@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 
+import pytest
 from fastapi.testclient import TestClient
 
 from miromem.gateway.app import app
@@ -69,6 +70,28 @@ def test_create_thinker_job_returns_job_id(monkeypatch):
     body = response.json()
     assert body["job_id"]
     assert body["status"] == "created"
+
+
+@pytest.mark.parametrize("mode", ["upload", "polymarket"])
+def test_create_thinker_job_rejects_unimplemented_modes_without_creating_job(monkeypatch, mode):
+    def _unexpected_create_task(coro):
+        coro.close()
+        raise AssertionError("background task should not be scheduled for unimplemented modes")
+
+    monkeypatch.setattr(thinker_api.asyncio, "create_task", _unexpected_create_task)
+    client = _client()
+
+    response = client.post(
+        "/api/v1/thinker/jobs",
+        json={
+            "mode": mode,
+            "research_direction": "Fed outlook",
+        },
+    )
+
+    assert response.status_code == 501
+    assert response.json() == {"detail": f"Thinker mode '{mode}' is not implemented yet"}
+    assert thinker_api._get_job_store()._jobs == {}
 
 
 def test_create_thinker_job_rejects_invalid_mode():

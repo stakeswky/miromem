@@ -41,6 +41,7 @@ class InMemoryThinkerJobStore:
             error_code=None,
             error_message=None,
             retryable=None,
+            can_continue_without_thinker=True,
         )
 
     def mark_succeeded(
@@ -56,6 +57,7 @@ class InMemoryThinkerJobStore:
             error_code=None,
             error_message=None,
             retryable=None,
+            can_continue_without_thinker=True,
         )
 
     def mark_failed(
@@ -77,7 +79,14 @@ class InMemoryThinkerJobStore:
         )
 
     def mark_materialized(self, job_id: str) -> ThinkerJob:
-        return self._transition(job_id, "materialized")
+        return self._transition(
+            job_id,
+            "materialized",
+            error_code=None,
+            error_message=None,
+            retryable=None,
+            can_continue_without_thinker=True,
+        )
 
     def mark_skipped(self, job_id: str) -> ThinkerJob:
         return self._transition(job_id, "skipped")
@@ -94,6 +103,7 @@ class InMemoryThinkerJobStore:
             error_code=None,
             error_message=None,
             retryable=None,
+            can_continue_without_thinker=True,
         )
 
     def _require_job(self, job_id: str) -> ThinkerJob:
