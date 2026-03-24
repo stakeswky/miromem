@@ -140,6 +140,13 @@ Copy `.env.template` to `.env` and fill in your values. Key variables:
 | `LLM_API_KEY` | OpenAI-compatible LLM API key | — |
 | `LLM_BASE_URL` | LLM provider base URL | `https://openrouter.ai/api/v1` |
 | `LLM_MODEL` | Model name | `x-ai/grok-4-fast` |
+| `THINKER_LLM_API_KEY` | Optional Thinker-specific LLM API key override | — |
+| `THINKER_LLM_BASE_URL` | Thinker LLM base URL | — |
+| `THINKER_LLM_MODEL` | Thinker model name | — |
+| `THINKER_SEARCH_BASE_URL` | Thinker search provider base URL | — |
+| `THINKER_SEARCH_API_KEY` | Thinker search provider API key | — |
+| `THINKER_SCRAPE_BASE_URL` | Thinker scrape provider base URL | — |
+| `THINKER_SCRAPE_API_KEY` | Thinker scrape provider API key | — |
 | `EMBEDDING_API_KEY` | Embedding model API key | — |
 | `EMBEDDING_MODEL` | Embedding model name | `Qwen/Qwen3-Embedding-4B` |
 | `MONGODB_URI` | MongoDB connection string | `mongodb://root:miromem@mongodb:27017` |

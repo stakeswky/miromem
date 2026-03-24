@@ -42,11 +42,15 @@ class LLMConfig:
 
 @dataclass
 class ThinkerConfig:
-    """Thinker-specific LLM settings."""
+    """Thinker-specific provider settings."""
 
     llm_api_key: str = field(default_factory=lambda: os.getenv("THINKER_LLM_API_KEY", ""))
     llm_base_url: str = field(default_factory=lambda: os.getenv("THINKER_LLM_BASE_URL", ""))
     llm_model: str = field(default_factory=lambda: os.getenv("THINKER_LLM_MODEL", ""))
+    search_base_url: str = field(default_factory=lambda: os.getenv("THINKER_SEARCH_BASE_URL", ""))
+    search_api_key: str = field(default_factory=lambda: os.getenv("THINKER_SEARCH_API_KEY", ""))
+    scrape_base_url: str = field(default_factory=lambda: os.getenv("THINKER_SCRAPE_BASE_URL", ""))
+    scrape_api_key: str = field(default_factory=lambda: os.getenv("THINKER_SCRAPE_API_KEY", ""))
 
 
 @dataclass

@@ -118,7 +118,8 @@ class InMemoryThinkerJobStore:
             raise ValueError(f"Illegal Thinker job transition: {job.status} -> {status}")
 
         job.status = status
-        job.result = result
+        if result is not None:
+            job.result = result
         job.error_code = error_code
         job.error_message = error_message
         job.retryable = retryable
