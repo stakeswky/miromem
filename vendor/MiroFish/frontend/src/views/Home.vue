@@ -289,6 +289,7 @@
                         采用 Thinker 结果
                       </button>
                       <button
+                        v-if="canSkipUploadThinkerAction"
                         class="thinker-secondary-btn"
                         @click="skipUploadThinkerFlow"
                         :disabled="loading"
@@ -298,18 +299,26 @@
                     </div>
                   </div>
 
-                  <div v-else-if="thinkerStatus === 'failed'" class="thinker-actions">
+                  <div
+                    v-else-if="
+                      thinkerStatus === 'failed' &&
+                      (canRetryUploadThinkerAction || canSkipUploadThinkerAction)
+                    "
+                    class="thinker-actions"
+                  >
                     <button
+                      v-if="canRetryUploadThinkerAction"
                       class="thinker-primary-btn"
                       @click="retryUploadThinkerFlow"
-                      :disabled="loading || !thinkerJobId"
+                      :disabled="loading || !thinkerJobId || !canRetryUploadThinkerAction"
                     >
                       重试 Thinker
                     </button>
                     <button
+                      v-if="canSkipUploadThinkerAction"
                       class="thinker-secondary-btn"
                       @click="skipUploadThinkerFlow"
-                      :disabled="loading || !thinkerJobId"
+                      :disabled="loading || !thinkerJobId || !canSkipUploadThinkerAction"
                     >
                       跳过 Thinker
                     </button>
@@ -433,9 +442,13 @@ import {
 } from '../store/pendingUpload.js'
 import {
   buildThinkerSeedFile,
+  extractThinkerErrorMessage,
   hydrateThinkerDraft,
+  normalizeThinkerAvailableActions,
+  normalizeThinkerJobState,
   normalizeThinkerMaterialized,
-  pollThinkerJobUntilTerminal
+  pollThinkerJobUntilTerminal,
+  resolveThinkerPollErrorState
 } from '../utils/thinker'
 
 const router = useRouter()
@@ -477,6 +490,7 @@ const thinkerJobId = ref('')
 const thinkerStatus = ref('')
 const thinkerResultDraft = ref(createEmptyThinkerDraft())
 const thinkerError = ref('')
+const thinkerAvailableActions = ref([])
 const thinkerInputSnapshot = ref({
   files: [],
   simulationRequirement: ''
@@ -501,6 +515,14 @@ const uploadInputsDisabled = computed(() => (
   (loading.value || (thinkerEnabled.value && thinkerJobId.value !== ''))
 ))
 
+const canRetryUploadThinkerAction = computed(() => (
+  thinkerAvailableActions.value.includes('retry')
+))
+
+const canSkipUploadThinkerAction = computed(() => (
+  thinkerAvailableActions.value.includes('skip')
+))
+
 const thinkerExpandedTopicsText = computed({
   get: () => thinkerResultDraft.value.expandedTopics.join('\n'),
   set: value => {
@@ -522,11 +544,16 @@ const startButtonLabel = computed(() => {
   }
 
   if (activeTab.value === 'upload' && thinkerEnabled.value && thinkerJobId.value) {
+    if (thinkerStatus.value === 'created' || thinkerStatus.value === 'running') {
+      return '等待 Thinker 完成'
+    }
     if (thinkerStatus.value === 'succeeded') {
       return '等待采用 Thinker 结果'
     }
     if (thinkerStatus.value === 'failed') {
-      return '请重试或跳过 Thinker'
+      return canRetryUploadThinkerAction.value || canSkipUploadThinkerAction.value
+        ? '请重试或跳过 Thinker'
+        : 'Thinker 已结束'
     }
   }
 
@@ -676,19 +703,6 @@ const formatThinkerStatus = (status) => {
   return statusText[status] || status || '待启动'
 }
 
-const getThinkerErrorMessage = (err, fallback) => {
-  const detail = err?.response?.data?.detail
-  if (typeof detail === 'string' && detail.trim()) {
-    return detail
-  }
-
-  if (typeof err?.message === 'string' && err.message.trim()) {
-    return err.message
-  }
-
-  return fallback
-}
-
 const getCurrentUploadSnapshot = () => ({
   files: [...files.value],
   simulationRequirement: formData.value.simulationRequirement
@@ -710,6 +724,7 @@ const resetUploadThinkerState = () => {
   thinkerStatus.value = ''
   thinkerResultDraft.value = createEmptyThinkerDraft()
   thinkerError.value = ''
+  thinkerAvailableActions.value = []
   thinkerInputSnapshot.value = {
     files: [],
     simulationRequirement: ''
@@ -722,34 +737,63 @@ const handleThinkerToggleChange = () => {
   }
 }
 
-const finalizeUploadThinkerJob = (job) => {
-  thinkerStatus.value = job?.status || ''
+const applyUploadThinkerJobState = (job, options = {}) => {
+  const state = normalizeThinkerJobState(job)
 
-  if (job?.status === 'succeeded') {
+  thinkerStatus.value = state.status
+  thinkerAvailableActions.value = state.availableActions
+
+  if (state.status === 'succeeded') {
     thinkerResultDraft.value = hydrateThinkerDraft(job?.result)
-    thinkerError.value = ''
+    if (!options.preserveError) {
+      thinkerError.value = ''
+    }
     return
   }
 
   thinkerResultDraft.value = createEmptyThinkerDraft()
 
-  if (job?.status === 'failed') {
-    thinkerError.value = job?.error_message || 'Thinker 分析失败'
+  if (state.status === 'failed') {
+    thinkerError.value = state.errorMessage || 'Thinker 分析失败'
     return
   }
 
-  thinkerError.value = ''
+  if (!options.preserveError) {
+    thinkerError.value = ''
+  }
 }
 
 const pollUploadThinkerJob = async (jobId) => {
-  const terminalJob = await pollThinkerJobUntilTerminal(jobId, getThinkerJob, {
-    onUpdate: job => {
-      thinkerStatus.value = job?.status || thinkerStatus.value
-    }
-  })
+  try {
+    const terminalJob = await pollThinkerJobUntilTerminal(jobId, getThinkerJob, {
+      onUpdate: job => {
+        const state = normalizeThinkerJobState(job)
+        thinkerStatus.value = state.status || thinkerStatus.value
+        thinkerAvailableActions.value = state.availableActions
+      }
+    })
 
-  finalizeUploadThinkerJob(terminalJob)
-  return terminalJob
+    applyUploadThinkerJobState(terminalJob)
+    return terminalJob
+  } catch (err) {
+    const recoveredState = await resolveThinkerPollErrorState(jobId, getThinkerJob, err)
+
+    if (recoveredState.job) {
+      applyUploadThinkerJobState(recoveredState.job, {
+        preserveError: !recoveredState.isTerminal
+      })
+
+      if (!recoveredState.isTerminal) {
+        thinkerError.value = recoveredState.errorMessage
+      }
+
+      return recoveredState.job
+    }
+
+    thinkerAvailableActions.value = []
+    thinkerError.value = recoveredState.errorMessage
+    return null
+  }
 }
 
 const pushPendingUploadToProcess = (filesOrPayload, requirement = '') => {
@@ -760,6 +804,7 @@ const pushPendingUploadToProcess = (filesOrPayload, requirement = '') => {
 const startUploadThinkerFlow = async () => {
   thinkerError.value = ''
   thinkerResultDraft.value = createEmptyThinkerDraft()
+  thinkerAvailableActions.value = []
   thinkerInputSnapshot.value = getCurrentUploadSnapshot()
 
   const payload = new FormData()
@@ -775,13 +820,17 @@ const startUploadThinkerFlow = async () => {
     const job = await createThinkerJob(payload)
     thinkerJobId.value = job?.job_id || ''
     if (!thinkerJobId.value) {
-      throw new Error('Thinker job 创建失败: 缺少 job_id')
+      thinkerStatus.value = ''
+      thinkerAvailableActions.value = normalizeThinkerAvailableActions(job?.available_actions)
+      thinkerError.value = 'Thinker job 创建失败: 缺少 job_id'
+      return
     }
-    thinkerStatus.value = job?.status || 'created'
+    applyUploadThinkerJobState(job)
     await pollUploadThinkerJob(thinkerJobId.value)
   } catch (err) {
-    thinkerStatus.value = 'failed'
-    thinkerError.value = getThinkerErrorMessage(err, 'Thinker 任务创建失败')
+    thinkerStatus.value = ''
+    thinkerAvailableActions.value = []
+    thinkerError.value = extractThinkerErrorMessage(err, 'Thinker 任务创建失败')
   } finally {
     loading.value = false
   }
@@ -818,14 +867,14 @@ const adoptUploadThinkerResult = async () => {
 
     pushPendingUploadToProcess(pendingPayload)
   } catch (err) {
-    thinkerError.value = getThinkerErrorMessage(err, 'Thinker 结果采用失败')
+    thinkerError.value = extractThinkerErrorMessage(err, 'Thinker 结果采用失败')
   } finally {
     loading.value = false
   }
 }
 
 const retryUploadThinkerFlow = async () => {
-  if (!thinkerJobId.value) return
+  if (!thinkerJobId.value || !canRetryUploadThinkerAction.value) return
 
   loading.value = true
   thinkerError.value = ''
@@ -834,30 +883,31 @@ const retryUploadThinkerFlow = async () => {
   try {
     const job = await retryThinkerJob(thinkerJobId.value)
     thinkerJobId.value = job?.job_id || thinkerJobId.value
-    thinkerStatus.value = job?.status || 'created'
+    applyUploadThinkerJobState(job)
     await pollUploadThinkerJob(job?.job_id || thinkerJobId.value)
   } catch (err) {
-    thinkerStatus.value = 'failed'
-    thinkerError.value = getThinkerErrorMessage(err, 'Thinker 重试失败')
+    thinkerError.value = extractThinkerErrorMessage(err, 'Thinker 重试失败')
   } finally {
     loading.value = false
   }
 }
 
 const skipUploadThinkerFlow = async () => {
+  if (thinkerJobId.value && !canSkipUploadThinkerAction.value) return
+
   loading.value = true
   thinkerError.value = ''
 
   try {
     if (thinkerJobId.value) {
       const job = await skipThinkerJob(thinkerJobId.value)
-      thinkerStatus.value = job?.status || 'skipped'
+      applyUploadThinkerJobState(job)
     }
 
     const snapshot = getThinkerSnapshot()
     pushPendingUploadToProcess(snapshot.files, snapshot.simulationRequirement)
   } catch (err) {
-    thinkerError.value = getThinkerErrorMessage(err, '跳过 Thinker 失败')
+    thinkerError.value = extractThinkerErrorMessage(err, '跳过 Thinker 失败')
   } finally {
     loading.value = false
   }

@@ -7,7 +7,9 @@ if (typeof globalThis.File === 'undefined') {
 
 const {
   buildThinkerSeedFile,
-  normalizeThinkerMaterialized
+  normalizeThinkerAvailableActions,
+  normalizeThinkerMaterialized,
+  resolveThinkerPollErrorState
 } = await import('../src/utils/thinker.js')
 const {
   createPendingUploadPayload,
@@ -104,11 +106,74 @@ async function testCreatePendingUploadPayloadForThinkerAdoption() {
   assert.equal(payload.finalSeedText, '# Draft')
 }
 
+async function testNormalizeThinkerAvailableActions() {
+  assert.deepEqual(
+    normalizeThinkerAvailableActions(['retry', 'skip', 'skip', 'unknown']),
+    ['retry', 'skip'],
+    'only supported Thinker actions should remain, in stable order'
+  )
+  assert.deepEqual(
+    normalizeThinkerAvailableActions(null),
+    [],
+    'missing available_actions should normalize to an empty array'
+  )
+}
+
+async function testResolveThinkerPollErrorStateKeepsTransportFailureSeparate() {
+  const recovered = await resolveThinkerPollErrorState(
+    'job-running',
+    async jobId => ({
+      job_id: jobId,
+      status: 'running',
+      available_actions: []
+    }),
+    new Error('network flake')
+  )
+
+  assert.equal(recovered.status, 'running')
+  assert.equal(
+    recovered.isTerminal,
+    false,
+    'a recovered non-terminal job must not be treated as terminally failed'
+  )
+  assert.deepEqual(recovered.availableActions, [])
+  assert.equal(recovered.errorMessage, 'network flake')
+}
+
+async function testResolveThinkerPollErrorStateUsesServerActionsForTerminalFailure() {
+  const recovered = await resolveThinkerPollErrorState(
+    'job-failed',
+    async jobId => ({
+      job_id: jobId,
+      status: 'failed',
+      available_actions: ['retry', 'skip'],
+      error_message: 'provider unavailable'
+    }),
+    new Error('poll timeout')
+  )
+
+  assert.equal(recovered.status, 'failed')
+  assert.equal(recovered.isTerminal, true)
+  assert.deepEqual(
+    recovered.availableActions,
+    ['retry', 'skip'],
+    'retry/skip availability must come from the server payload'
+  )
+  assert.equal(
+    recovered.errorMessage,
+    'provider unavailable',
+    'terminal failure should surface the backend error details when they are available'
+  )
+}
+
 async function main() {
   await testExplicitEmptyPromptPreserved()
   await testNormalizeThenBuildSeedFileFlow()
   await testLegacyPendingUploadSignature()
   await testCreatePendingUploadPayloadForThinkerAdoption()
+  await testNormalizeThinkerAvailableActions()
+  await testResolveThinkerPollErrorStateKeepsTransportFailureSeparate()
+  await testResolveThinkerPollErrorStateUsesServerActionsForTerminalFailure()
   clearPendingUpload()
   console.log('thinker smoke check passed')
 }

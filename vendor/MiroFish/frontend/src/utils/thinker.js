@@ -4,6 +4,10 @@ const TERMINAL_STATUSES = new Set([
   'materialized',
   'skipped'
 ])
+const AVAILABLE_ACTIONS = new Set([
+  'retry',
+  'skip'
+])
 
 const DEFAULT_POLL_INTERVAL_MS = 1500
 const DEFAULT_POLL_TIMEOUT_MS = 180000
@@ -38,6 +42,46 @@ export function isThinkerTerminalStatus(status) {
   return TERMINAL_STATUSES.has(toStringValue(status).trim())
 }
 
+export function normalizeThinkerAvailableActions(actions) {
+  if (!Array.isArray(actions)) {
+    return []
+  }
+
+  const normalized = []
+
+  actions.forEach(action => {
+    const value = toStringValue(action).trim()
+    if (AVAILABLE_ACTIONS.has(value) && !normalized.includes(value)) {
+      normalized.push(value)
+    }
+  })
+
+  return normalized
+}
+
+export function normalizeThinkerJobState(job = {}) {
+  return {
+    status: toStringValue(job?.status).trim(),
+    availableActions: normalizeThinkerAvailableActions(
+      job?.available_actions ?? job?.availableActions
+    ),
+    errorMessage: toStringValue(job?.error_message ?? job?.errorMessage)
+  }
+}
+
+export function extractThinkerErrorMessage(error, fallback = '') {
+  const detail = error?.response?.data?.detail
+  if (typeof detail === 'string' && detail.trim()) {
+    return detail
+  }
+
+  if (typeof error?.message === 'string' && error.message.trim()) {
+    return error.message
+  }
+
+  return fallback
+}
+
 export async function pollThinkerJobUntilTerminal(jobId, getJob, options = {}) {
   if (typeof getJob !== 'function') {
     throw new TypeError('pollThinkerJobUntilTerminal requires a getJob function')
@@ -67,6 +111,44 @@ export async function pollThinkerJobUntilTerminal(jobId, getJob, options = {}) {
     }
 
     await delay(intervalMs)
+  }
+}
+
+export async function resolveThinkerPollErrorState(jobId, getJob, error) {
+  const fallbackMessage = jobId
+    ? `Failed to refresh Thinker job ${jobId}`
+    : 'Thinker polling failed'
+  const transportErrorMessage = extractThinkerErrorMessage(error, fallbackMessage)
+
+  if (!jobId || typeof getJob !== 'function') {
+    return {
+      job: null,
+      status: '',
+      availableActions: [],
+      errorMessage: transportErrorMessage,
+      isTerminal: false
+    }
+  }
+
+  try {
+    const job = await getJob(jobId)
+    const state = normalizeThinkerJobState(job)
+
+    return {
+      job,
+      status: state.status,
+      availableActions: state.availableActions,
+      errorMessage: state.errorMessage || transportErrorMessage,
+      isTerminal: isThinkerTerminalStatus(state.status)
+    }
+  } catch {
+    return {
+      job: null,
+      status: '',
+      availableActions: [],
+      errorMessage: transportErrorMessage,
+      isTerminal: false
+    }
   }
 }
 
