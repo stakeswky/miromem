@@ -6,6 +6,7 @@ import importlib.util
 import sys
 import types
 from pathlib import Path
+from typing import Any
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -42,6 +43,36 @@ def _load_mirofish_module(module_name: str, relative_path: str):
     return module
 
 
+def _install_fake_external_modules() -> None:
+    openai_module = types.ModuleType("openai")
+
+    class _FakeOpenAI:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.chat = types.SimpleNamespace(
+                completions=types.SimpleNamespace(
+                    create=lambda *call_args, **call_kwargs: None,
+                )
+            )
+
+    openai_module.OpenAI = _FakeOpenAI
+    sys.modules["openai"] = openai_module
+
+    zep_cloud_module = types.ModuleType("zep_cloud")
+    zep_cloud_client_module = types.ModuleType("zep_cloud.client")
+
+    class _FakeZep:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.graph = types.SimpleNamespace(
+                add=lambda **call_kwargs: None,
+                search=lambda **call_kwargs: types.SimpleNamespace(edges=[], nodes=[]),
+            )
+
+    zep_cloud_client_module.Zep = _FakeZep
+    zep_cloud_module.client = zep_cloud_client_module
+    sys.modules["zep_cloud"] = zep_cloud_module
+    sys.modules["zep_cloud.client"] = zep_cloud_client_module
+
+
 class _FakeGraphBackendClient:
     def __init__(self, base_url: str) -> None:
         self.base_url = base_url
@@ -49,6 +80,14 @@ class _FakeGraphBackendClient:
         self.snapshot_calls: list[str] = []
         self.entity_calls: list[tuple[str, dict[str, object]]] = []
         self.detail_calls: list[tuple[str, str]] = []
+        self.search_calls: list[tuple[str, dict[str, object]]] = []
+        self.append_calls: list[tuple[str, dict[str, object]]] = []
+        self.search_response: dict[str, object] = {
+            "facts": ["Alice is campaigning in California."],
+            "node_summaries": ["California: A state"],
+            "context": "facts and nodes",
+        }
+        self.append_error: Exception | None = None
 
     def build_graph(self, graph_id: str, payload: dict[str, object]) -> dict[str, object]:
         self.build_calls.append((graph_id, payload))
@@ -148,6 +187,16 @@ class _FakeGraphBackendClient:
                 }
             ],
         }
+
+    def search(self, graph_id: str, payload: dict[str, object]) -> dict[str, object]:
+        self.search_calls.append((graph_id, payload))
+        return self.search_response
+
+    def append_episodes(self, graph_id: str, payload: dict[str, object]) -> dict[str, object]:
+        self.append_calls.append((graph_id, payload))
+        if self.append_error is not None:
+            raise self.append_error
+        return {"job_id": "append-job-123", "status": "queued"}
 
 
 def test_config_defaults_to_zep_backend(monkeypatch):
@@ -259,3 +308,118 @@ def test_zep_entity_reader_uses_graph_service_when_feature_flag_enabled(monkeypa
     assert entity is not None
     assert entity.name == "Alice"
     assert entity.related_nodes[0]["name"] == "Bob"
+
+
+def test_profile_generator_uses_graph_service_search_when_graphiti_enabled(monkeypatch):
+    _install_fake_external_modules()
+    monkeypatch.setenv("GRAPH_BACKEND", "graphiti")
+    monkeypatch.setenv("GRAPH_SERVICE_BASE_URL", "http://graph-service:8001")
+    monkeypatch.setenv("LLM_API_KEY", "llm-key")
+    monkeypatch.delenv("ZEP_API_KEY", raising=False)
+
+    _load_mirofish_module(
+        "vendor.MiroFish.backend.app.config",
+        "config.py",
+    )
+    profile_module = _load_mirofish_module(
+        "vendor.MiroFish.backend.app.services.oasis_profile_generator",
+        "services/oasis_profile_generator.py",
+    )
+
+    fake_client = _FakeGraphBackendClient("http://graph-service:8001")
+    fake_client.search_response = {
+        "facts": ["Alice supports carbon pricing."],
+        "node_summaries": ["Bob: A campaign adviser"],
+        "context": "facts and nodes",
+    }
+    monkeypatch.setattr(
+        profile_module,
+        "GraphBackendClient",
+        lambda base_url: fake_client,
+        raising=False,
+    )
+
+    generator = profile_module.OasisProfileGenerator(graph_id="mirofish_demo")
+    entity = profile_module.EntityNode(
+        uuid="node-1",
+        name="Alice",
+        labels=["Entity", "Person"],
+        summary="Market analyst",
+        attributes={},
+    )
+
+    payload = generator._search_zep_for_entity(entity)
+
+    assert fake_client.search_calls == [
+        (
+            "mirofish_demo",
+            {
+                "query": "关于Alice的所有信息、活动、事件、关系和背景",
+                "limit": 30,
+                "center_node_uuid": "node-1",
+            },
+        )
+    ]
+    assert payload == {
+        "facts": ["Alice supports carbon pricing."],
+        "node_summaries": ["Bob: A campaign adviser"],
+        "context": "facts and nodes",
+    }
+
+
+def test_graph_memory_updater_degrades_without_stopping_simulation(monkeypatch):
+    _install_fake_external_modules()
+    monkeypatch.setenv("GRAPH_BACKEND", "graphiti")
+    monkeypatch.setenv("GRAPH_SERVICE_BASE_URL", "http://graph-service:8001")
+    monkeypatch.delenv("ZEP_API_KEY", raising=False)
+
+    _load_mirofish_module(
+        "vendor.MiroFish.backend.app.config",
+        "config.py",
+    )
+    updater_module = _load_mirofish_module(
+        "vendor.MiroFish.backend.app.services.zep_graph_memory_updater",
+        "services/zep_graph_memory_updater.py",
+    )
+
+    fake_client = _FakeGraphBackendClient("http://graph-service:8001")
+    fake_client.append_error = RuntimeError("graph append unavailable")
+    monkeypatch.setattr(
+        updater_module,
+        "GraphBackendClient",
+        lambda base_url: fake_client,
+        raising=False,
+    )
+
+    updater = updater_module.ZepGraphMemoryUpdater(graph_id="mirofish_demo")
+    activity = updater_module.AgentActivity(
+        platform="twitter",
+        agent_id=1,
+        agent_name="Alice",
+        action_type="CREATE_POST",
+        action_args={"content": "Hello markets"},
+        round_num=1,
+        timestamp="2026-03-24T12:00:00Z",
+    )
+
+    updater._send_batch_activities([activity], "twitter")
+    stats = updater.get_stats()
+
+    assert len(fake_client.append_calls) == updater.MAX_RETRIES
+    assert fake_client.append_calls[0] == (
+        "mirofish_demo",
+        {
+            "episodes": [
+                {
+                    "name": "Twitter action batch",
+                    "content": "Alice: 发布了一条帖子：「Hello markets」",
+                    "reference_time": "2026-03-24T12:00:00Z",
+                    "source": "text",
+                    "source_description": "simulation:twitter",
+                }
+            ]
+        },
+    )
+    assert stats["batches_sent"] == 0
+    assert stats["items_sent"] == 0
+    assert stats["failed_count"] == 1

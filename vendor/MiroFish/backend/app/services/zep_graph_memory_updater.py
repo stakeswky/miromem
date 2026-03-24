@@ -3,19 +3,16 @@ Zep图谱记忆更新服务
 将模拟中的Agent活动动态更新到Zep图谱中
 """
 
-import os
 import time
 import threading
-import json
-from typing import Dict, Any, List, Optional, Callable
+from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 from datetime import datetime
 from queue import Queue, Empty
 
-from zep_cloud.client import Zep
-
 from ..config import Config
 from ..utils.logger import get_logger
+from .graph_backend_client import GraphBackendClient
 
 logger = get_logger('mirofish.zep_graph_memory_updater')
 
@@ -237,12 +234,15 @@ class ZepGraphMemoryUpdater:
             api_key: Zep API Key（可选，默认从配置读取）
         """
         self.graph_id = graph_id
+        self.backend = Config.GRAPH_BACKEND
         self.api_key = api_key or Config.ZEP_API_KEY
-        
-        if not self.api_key:
-            raise ValueError("ZEP_API_KEY未配置")
-        
-        self.client = Zep(api_key=self.api_key)
+
+        if self.backend == "graphiti":
+            self.client = GraphBackendClient(Config.GRAPH_SERVICE_BASE_URL)
+        else:
+            if not self.api_key:
+                raise ValueError("ZEP_API_KEY未配置")
+            self.client = self._build_zep_client(self.api_key)
         
         # 活动队列
         self._activity_queue: Queue = Queue()
@@ -266,6 +266,11 @@ class ZepGraphMemoryUpdater:
         self._skipped_count = 0     # 被过滤跳过的活动数（DO_NOTHING）
         
         logger.info(f"ZepGraphMemoryUpdater 初始化完成: graph_id={graph_id}, batch_size={self.BATCH_SIZE}")
+
+    def _build_zep_client(self, api_key: str):
+        from zep_cloud.client import Zep
+
+        return Zep(api_key=api_key)
     
     def _get_platform_display_name(self, platform: str) -> str:
         """获取平台的显示名称"""
@@ -401,15 +406,22 @@ class ZepGraphMemoryUpdater:
         # 将多条活动合并为一条文本，用换行分隔
         episode_texts = [activity.to_episode_text() for activity in activities]
         combined_text = "\n".join(episode_texts)
+        episode_payload = self._build_episode_payload(activities, platform, combined_text)
         
         # 带重试的发送
         for attempt in range(self.MAX_RETRIES):
             try:
-                self.client.graph.add(
-                    graph_id=self.graph_id,
-                    type="text",
-                    data=combined_text
-                )
+                if self.backend == "graphiti":
+                    self.client.append_episodes(
+                        self.graph_id,
+                        episode_payload,
+                    )
+                else:
+                    self.client.graph.add(
+                        graph_id=self.graph_id,
+                        type="text",
+                        data=combined_text
+                    )
                 
                 self._total_sent += 1
                 self._total_items_sent += len(activities)
@@ -420,11 +432,46 @@ class ZepGraphMemoryUpdater:
                 
             except Exception as e:
                 if attempt < self.MAX_RETRIES - 1:
-                    logger.warning(f"批量发送到Zep失败 (尝试 {attempt + 1}/{self.MAX_RETRIES}): {e}")
+                    if self.backend == "graphiti":
+                        logger.warning(
+                            f"图服务追加失败 (尝试 {attempt + 1}/{self.MAX_RETRIES})，"
+                            f"将继续退化运行模拟: {e}"
+                        )
+                    else:
+                        logger.warning(f"批量发送到Zep失败 (尝试 {attempt + 1}/{self.MAX_RETRIES}): {e}")
                     time.sleep(self.RETRY_DELAY * (attempt + 1))
                 else:
-                    logger.error(f"批量发送到Zep失败，已重试{self.MAX_RETRIES}次: {e}")
+                    if self.backend == "graphiti":
+                        logger.error(
+                            f"图服务追加失败，已降级继续模拟并跳过该批次，"
+                            f"重试{self.MAX_RETRIES}次后仍失败: {e}"
+                        )
+                    else:
+                        logger.error(f"批量发送到Zep失败，已重试{self.MAX_RETRIES}次: {e}")
                     self._failed_count += 1
+
+    def _build_episode_payload(
+        self,
+        activities: List[AgentActivity],
+        platform: str,
+        combined_text: str,
+    ) -> Dict[str, Any]:
+        latest_timestamp = max(
+            (activity.timestamp for activity in activities if activity.timestamp),
+            default=datetime.now().isoformat(),
+        )
+        platform_name = platform.lower()
+        return {
+            "episodes": [
+                {
+                    "name": f"{platform_name.capitalize()} action batch",
+                    "content": combined_text,
+                    "reference_time": latest_timestamp,
+                    "source": "text",
+                    "source_description": f"simulation:{platform_name}",
+                }
+            ]
+        }
     
     def _flush_remaining(self):
         """发送队列和缓冲区中剩余的活动"""
