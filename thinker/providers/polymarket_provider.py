@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Protocol
 
 
@@ -49,6 +50,20 @@ def _normalize_outcomes(raw_outcomes: Any) -> list[str]:
         return [str(outcome).strip() for outcome in raw_outcomes if str(outcome).strip()]
     if raw_outcomes is None:
         return []
+    if isinstance(raw_outcomes, str):
+        text = raw_outcomes.strip()
+        if not text:
+            return []
+        try:
+            decoded = json.loads(text)
+        except json.JSONDecodeError:
+            return [text]
+        if isinstance(decoded, list):
+            return [str(outcome).strip() for outcome in decoded if str(outcome).strip()]
+        if decoded is None:
+            return []
+        decoded_text = str(decoded).strip()
+        return [decoded_text] if decoded_text else []
     text = str(raw_outcomes).strip()
     return [text] if text else []
 

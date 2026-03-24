@@ -42,20 +42,23 @@ def extract_text(*, name: str, payload: bytes) -> str:
         raise ValueError(f"Unsupported upload type: {suffix or 'unknown'}")
 
     if suffix == ".pdf":
-        return _extract_pdf_text(payload)
+        return _extract_pdf_text(name=name, payload=payload)
 
     return _decode_text_payload(payload)
 
 
-def _extract_pdf_text(payload: bytes) -> str:
+def _extract_pdf_text(*, name: str, payload: bytes) -> str:
     import fitz
 
     pages: list[str] = []
-    with fitz.open(stream=payload, filetype="pdf") as document:
-        for page in document:
-            text = page.get_text().strip()
-            if text:
-                pages.append(text)
+    try:
+        with fitz.open(stream=payload, filetype="pdf") as document:
+            for page in document:
+                text = page.get_text().strip()
+                if text:
+                    pages.append(text)
+    except (fitz.EmptyFileError, fitz.FileDataError, RuntimeError, ValueError) as exc:
+        raise ValueError(f"Invalid PDF upload: {name}") from exc
     return "\n\n".join(pages)
 
 

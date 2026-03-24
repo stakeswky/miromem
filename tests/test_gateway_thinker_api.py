@@ -106,6 +106,29 @@ def test_create_thinker_job_accepts_polymarket_mode():
     ]
 
 
+def test_create_thinker_job_rejects_polymarket_mode_without_selected_event(monkeypatch):
+    def _unexpected_create_task(coro):
+        coro.close()
+        raise AssertionError("background task should not be scheduled without polymarket_event")
+
+    monkeypatch.setattr(thinker_api.asyncio, "create_task", _unexpected_create_task)
+    client = _client()
+
+    response = client.post(
+        "/api/v1/thinker/jobs",
+        json={
+            "mode": "polymarket",
+            "research_direction": "Election pricing drift",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "detail": "polymarket_event is required when mode='polymarket'"
+    }
+    assert thinker_api._get_job_store()._jobs == {}
+
+
 def test_create_thinker_job_accepts_upload_multipart_and_extracts_text():
     client = _client()
     thinker_api._orchestrator = _CapturingOrchestrator()
@@ -139,6 +162,30 @@ def test_create_thinker_job_accepts_upload_multipart_and_extracts_text():
             "polymarket_event": None,
         }
     ]
+
+
+def test_create_thinker_job_rejects_invalid_pdf_upload(monkeypatch):
+    def _unexpected_create_task(coro):
+        coro.close()
+        raise AssertionError("background task should not be scheduled for invalid PDF uploads")
+
+    monkeypatch.setattr(thinker_api.asyncio, "create_task", _unexpected_create_task)
+    client = _client()
+
+    response = client.post(
+        "/api/v1/thinker/jobs",
+        data={
+            "mode": "upload",
+            "research_direction": "Fed outlook",
+        },
+        files=[
+            ("files", ("damaged.pdf", b"not a real pdf", "application/pdf")),
+        ],
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Invalid PDF upload: damaged.pdf"}
+    assert thinker_api._get_job_store()._jobs == {}
 
 
 def test_create_thinker_job_rejects_invalid_mode():

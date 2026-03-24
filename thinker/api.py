@@ -249,6 +249,12 @@ async def _parse_multipart_job_create_request(request: Request) -> ThinkerJobCre
 
 def _validate_job_create_request(payload: Any) -> ThinkerJobCreateRequest:
     try:
-        return ThinkerJobCreateRequest.model_validate(payload)
+        body = ThinkerJobCreateRequest.model_validate(payload)
     except ValidationError as exc:
         raise RequestValidationError(exc.errors()) from exc
+    if body.mode == "polymarket" and not body.polymarket_event:
+        raise HTTPException(
+            status_code=422,
+            detail="polymarket_event is required when mode='polymarket'",
+        )
+    return body

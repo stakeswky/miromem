@@ -6,7 +6,7 @@ import pytest
 
 from miromem.thinker.models import ThinkerResult
 from miromem.thinker.orchestrator import ThinkerOrchestrator
-from miromem.thinker.providers import SearchHit
+from miromem.thinker.providers import DefaultPolymarketProvider, SearchHit
 
 
 class FakeLLMProvider:
@@ -95,3 +95,33 @@ async def test_polymarket_mode_normalizes_selected_event():
     )
 
     assert result.references
+
+
+@pytest.mark.asyncio
+async def test_polymarket_mode_normalizes_stringified_market_outcomes():
+    orchestrator = ThinkerOrchestrator(
+        llm_provider=FakeLLMProvider(),
+        search_provider=FakeSearchProvider(),
+        scrape_provider=FakeScrapeProvider(),
+        polymarket_provider=DefaultPolymarketProvider(),
+    )
+
+    result = await orchestrator.run(
+        mode="polymarket",
+        research_direction="Election pricing drift",
+        polymarket_event={
+            "title": "Will candidate X win the election?",
+            "description": "Proxy payload from the gateway.",
+            "slug": "candidate-x-election",
+            "markets": [
+                {
+                    "question": "Will candidate X win the election?",
+                    "outcomes": '["Yes","No"]',
+                    "outcomePrices": '["0.54","0.46"]',
+                }
+            ],
+        },
+    )
+
+    assert "Will candidate X win the election? (Yes, No)" in result.meta["evidence_preview"]
+    assert '["Yes","No"]' not in result.meta["evidence_preview"]
