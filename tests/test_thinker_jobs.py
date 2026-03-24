@@ -130,6 +130,7 @@ def test_failed_job_can_be_skipped():
     skipped = store.mark_skipped(job.job_id)
 
     assert skipped.status == "skipped"
+    assert skipped.can_continue_without_thinker is True
 
 
 def test_failed_job_can_be_skipped_even_when_continue_without_thinker_is_false():
@@ -145,7 +146,26 @@ def test_failed_job_can_be_skipped_even_when_continue_without_thinker_is_false()
     skipped = store.mark_skipped(job.job_id)
 
     assert skipped.status == "skipped"
+    assert skipped.can_continue_without_thinker is True
     assert store.get_job(job.job_id).status == "skipped"
+
+
+def test_succeeded_job_can_be_skipped_before_materialization():
+    store = InMemoryThinkerJobStore()
+    job = store.create_job(mode="topic_only", research_direction="Fed outlook")
+    expected_result = ThinkerResult(
+        expanded_topics=["Fed policy path"],
+        enriched_seed_text="Fed outlook seed",
+        suggested_simulation_prompt="Debate Fed policy path.",
+    )
+
+    store.mark_running(job.job_id)
+    store.mark_succeeded(job.job_id, result=expected_result)
+    skipped = store.mark_skipped(job.job_id)
+
+    assert skipped.status == "skipped"
+    assert skipped.result == expected_result
+    assert skipped.can_continue_without_thinker is True
 
 
 def test_external_mutation_does_not_change_stored_job():

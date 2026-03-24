@@ -404,6 +404,17 @@ def test_failed_job_status_exposes_both_actions_even_when_flags_are_false():
     assert response.json()["available_actions"] == ["retry", "skip"]
 
 
+def test_succeeded_job_status_exposes_skip_action():
+    client = _client()
+    job_id = _create_succeeded_job()
+
+    response = client.get(f"/api/v1/thinker/jobs/{job_id}")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "succeeded"
+    assert response.json()["available_actions"] == ["skip"]
+
+
 def test_materialize_allows_user_edits_and_falls_back_to_stored_result():
     client = _client()
     job_id = _create_succeeded_job()
@@ -516,6 +527,34 @@ def test_skip_allows_failed_job_even_when_continue_without_thinker_is_false():
         "error_message": None,
         "retryable": None,
         "available_actions": [],
-        "can_continue_without_thinker": False,
+        "can_continue_without_thinker": True,
+    }
+    assert thinker_api._get_job_store().get_job(job_id).status == "skipped"
+
+
+def test_skip_marks_succeeded_job_as_skipped():
+    client = _client()
+    job_id = _create_succeeded_job()
+
+    response = client.post(f"/api/v1/thinker/jobs/{job_id}/skip")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "job_id": job_id,
+        "mode": "topic_only",
+        "research_direction": "Fed outlook",
+        "status": "skipped",
+        "result": {
+            "expanded_topics": ["Fed"],
+            "enriched_seed_text": "seed",
+            "suggested_simulation_prompt": "prompt",
+            "references": [],
+            "meta": {},
+        },
+        "error_code": None,
+        "error_message": None,
+        "retryable": None,
+        "available_actions": [],
+        "can_continue_without_thinker": True,
     }
     assert thinker_api._get_job_store().get_job(job_id).status == "skipped"

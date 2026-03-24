@@ -37,6 +37,8 @@ def thinker_available_actions(
 ) -> list[ThinkerJobAction]:
     if status == "failed":
         return ["retry", "skip"]
+    if status == "succeeded":
+        return ["skip"]
     return []
 
 

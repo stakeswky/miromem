@@ -26,7 +26,7 @@ class InMemoryThinkerJobStore:
     _ALLOWED_TRANSITIONS: dict[ThinkerJobStatus, set[ThinkerJobStatus]] = {
         "created": {"running", "failed"},
         "running": {"succeeded", "failed"},
-        "succeeded": {"materialized"},
+        "succeeded": {"materialized", "skipped"},
         "failed": {"created", "skipped"},
         "materialized": set(),
         "skipped": set(),
@@ -126,7 +126,14 @@ class InMemoryThinkerJobStore:
         ):
             raise ValueError("Thinker job cannot be skipped.")
 
-        return self._transition(job_id, "skipped")
+        return self._transition(
+            job_id,
+            "skipped",
+            error_code=None,
+            error_message=None,
+            retryable=None,
+            can_continue_without_thinker=True,
+        )
 
     def retry_job(self, job_id: str) -> ThinkerJob:
         job = self._require_job(job_id)
