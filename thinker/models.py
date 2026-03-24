@@ -6,7 +6,9 @@ from datetime import datetime, timezone
 from typing import Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+ThinkerJobMode = Literal["topic_only", "upload", "polymarket"]
 
 ThinkerJobStatus = Literal[
     "created",
@@ -29,8 +31,10 @@ def _job_id() -> str:
 class ThinkerJob(BaseModel):
     """State tracked for a single Thinker orchestration job."""
 
+    model_config = ConfigDict(validate_assignment=True)
+
     job_id: str = Field(default_factory=_job_id)
-    mode: str
+    mode: ThinkerJobMode
     research_direction: str
     status: ThinkerJobStatus = "created"
     error_code: str | None = None
