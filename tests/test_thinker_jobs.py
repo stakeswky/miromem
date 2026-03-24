@@ -32,7 +32,7 @@ def test_failed_job_can_be_retried_but_succeeded_job_cannot():
         store.retry_job(completed.job_id)
 
 
-def test_failed_job_requires_retryable_flag_for_retry():
+def test_failed_job_can_be_retried_even_when_retryable_is_false():
     store = InMemoryThinkerJobStore()
     job = store.create_job(mode="topic_only", research_direction="Fed outlook")
     store.mark_failed(
@@ -42,10 +42,10 @@ def test_failed_job_requires_retryable_flag_for_retry():
         retryable=False,
     )
 
-    with pytest.raises(ValueError):
-        store.retry_job(job.job_id)
+    retried = store.retry_job(job.job_id)
 
-    assert store.get_job(job.job_id).status == "failed"
+    assert retried.status == "created"
+    assert store.get_job(job.job_id).status == "created"
 
 
 def test_retry_preserves_original_inputs_for_reexecution():
@@ -132,7 +132,7 @@ def test_failed_job_can_be_skipped():
     assert skipped.status == "skipped"
 
 
-def test_failed_job_requires_continue_without_thinker_for_skip():
+def test_failed_job_can_be_skipped_even_when_continue_without_thinker_is_false():
     store = InMemoryThinkerJobStore()
     job = store.create_job(mode="topic_only", research_direction="Fed outlook")
     store.mark_failed(
@@ -142,10 +142,10 @@ def test_failed_job_requires_continue_without_thinker_for_skip():
         can_continue_without_thinker=False,
     )
 
-    with pytest.raises(ValueError):
-        store.mark_skipped(job.job_id)
+    skipped = store.mark_skipped(job.job_id)
 
-    assert store.get_job(job.job_id).status == "failed"
+    assert skipped.status == "skipped"
+    assert store.get_job(job.job_id).status == "skipped"
 
 
 def test_external_mutation_does_not_change_stored_job():

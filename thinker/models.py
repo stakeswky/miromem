@@ -35,15 +35,9 @@ def thinker_available_actions(
     retryable: bool | None = None,
     can_continue_without_thinker: bool = True,
 ) -> list[ThinkerJobAction]:
-    if status != "failed":
-        return []
-
-    actions: list[ThinkerJobAction] = []
-    if retryable:
-        actions.append("retry")
-    if can_continue_without_thinker:
-        actions.append("skip")
-    return actions
+    if status == "failed":
+        return ["retry", "skip"]
+    return []
 
 
 class ThinkerUploadedFile(BaseModel):
