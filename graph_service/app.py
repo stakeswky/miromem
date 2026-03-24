@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
 from miromem.graph_service.api import graphs_router, health_router, jobs_router
@@ -22,7 +24,14 @@ def create_app(settings: GraphServiceSettings | None = None) -> FastAPI:
         metadata_store=metadata_store,
     )
 
-    app = FastAPI(title="MiroMem Graph Service", version="0.1.0")
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        try:
+            yield
+        finally:
+            app.state.build_worker.shutdown()
+
+    app = FastAPI(title="MiroMem Graph Service", version="0.1.0", lifespan=lifespan)
     app.state.settings = service_settings
     app.state.job_store = job_store
     app.state.graph_metadata_store = metadata_store

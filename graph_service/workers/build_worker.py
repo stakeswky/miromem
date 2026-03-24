@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass
-from threading import RLock
+from queue import Empty, Queue
+from threading import Event, Thread
 from typing import Any
 
 from miromem.graph_service.core.config import GraphServiceSettings
@@ -40,34 +40,42 @@ class BuildWorker:
         self._settings = settings
         self._job_store = job_store
         self._metadata_store = metadata_store
-        self._queue: deque[BuildGraphCommand] = deque()
-        self._lock = RLock()
-        self._draining = False
+        self._queue: Queue[BuildGraphCommand] = Queue()
+        self._shutdown_event = Event()
+        self._dispatcher = Thread(
+            target=self._dispatch_loop,
+            name="miromem-graph-build-worker",
+            daemon=True,
+        )
+        self._dispatcher.start()
 
     def enqueue(self, *, job_id: str, graph_id: str, request_payload: Mapping[str, Any]) -> None:
-        """Queue a build job and drain the in-memory worker immediately."""
-        command = BuildGraphCommand(
-            job_id=job_id,
-            graph_id=graph_id,
-            request_payload=dict(request_payload),
+        """Queue a build job for the background dispatcher and return immediately."""
+        self._queue.put(
+            BuildGraphCommand(
+                job_id=job_id,
+                graph_id=graph_id,
+                request_payload=dict(request_payload),
+            )
         )
-        with self._lock:
-            self._queue.append(command)
-            if self._draining:
-                return
-            self._draining = True
 
-        try:
-            while True:
-                with self._lock:
-                    if not self._queue:
-                        self._draining = False
-                        break
-                    next_command = self._queue.popleft()
-                asyncio.run(self._execute(next_command))
-        finally:
-            with self._lock:
-                self._draining = False
+    def shutdown(self, timeout: float = 1.0) -> None:
+        """Stop the background dispatcher thread."""
+        self._shutdown_event.set()
+        if self._dispatcher.is_alive():
+            self._dispatcher.join(timeout=timeout)
+
+    def _dispatch_loop(self) -> None:
+        while not self._shutdown_event.is_set():
+            try:
+                command = self._queue.get(timeout=0.1)
+            except Empty:
+                continue
+
+            try:
+                asyncio.run(self._execute(command))
+            finally:
+                self._queue.task_done()
 
     async def _execute(self, command: BuildGraphCommand) -> None:
         self._job_store.mark_running(command.job_id)
