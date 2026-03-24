@@ -22,6 +22,8 @@ from miromem.thinker.providers import (
     SearchProvider,
 )
 
+UPLOAD_EVIDENCE_CHAR_BUDGET = 12000
+
 
 class ThinkerOrchestrator:
     """Run Thinker research workflows using replaceable providers."""
@@ -115,9 +117,10 @@ class ThinkerOrchestrator:
             self._coerce_uploaded_file(raw_file)
             for raw_file in uploaded_files
         ]
-        evidence = [file.text.strip() for file in normalized_files if file.text.strip()]
-        if not evidence and seed_text.strip():
-            evidence = [seed_text.strip()]
+        evidence = self._build_upload_evidence(
+            uploaded_files=normalized_files,
+            seed_text=seed_text,
+        )
 
         references = [
             ThinkerReference(
@@ -244,6 +247,28 @@ class ThinkerOrchestrator:
             for part in (event.title, event.description, ", ".join(event.outcomes))
             if part and part.strip()
         ]
+        return evidence
+
+    def _build_upload_evidence(
+        self,
+        *,
+        uploaded_files: list[ThinkerUploadedFile],
+        seed_text: str,
+    ) -> list[str]:
+        source_texts = [file.text.strip() for file in uploaded_files if file.text.strip()]
+        if not source_texts and seed_text.strip():
+            source_texts = [seed_text.strip()]
+
+        evidence: list[str] = []
+        remaining_budget = UPLOAD_EVIDENCE_CHAR_BUDGET
+        for text in source_texts:
+            if remaining_budget <= 0:
+                break
+            truncated = text[:remaining_budget].strip()
+            if not truncated:
+                continue
+            evidence.append(truncated)
+            remaining_budget -= len(truncated)
         return evidence
 
     def _preview_evidence(self, evidence: list[str]) -> str:

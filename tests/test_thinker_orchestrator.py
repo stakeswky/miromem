@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from miromem.thinker.models import ThinkerResult
-from miromem.thinker.orchestrator import ThinkerOrchestrator
+from miromem.thinker.orchestrator import ThinkerOrchestrator, UPLOAD_EVIDENCE_CHAR_BUDGET
 from miromem.thinker.providers import DefaultPolymarketProvider, SearchHit
 
 
@@ -39,6 +39,29 @@ class FakeScrapeProvider:
 class FakePolymarketProvider:
     async def normalize_event(self, *, event: dict[str, object]) -> dict[str, object]:
         return event
+
+
+class CapturingLLMProvider:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def generate_research_bundle(
+        self,
+        *,
+        research_direction: str,
+        evidence: list[str],
+    ) -> ThinkerResult:
+        self.calls.append(
+            {
+                "research_direction": research_direction,
+                "evidence": list(evidence),
+            }
+        )
+        return ThinkerResult(
+            expanded_topics=["Fed policy path"],
+            enriched_seed_text="trimmed upload evidence",
+            suggested_simulation_prompt="Simulate the upload debate.",
+        )
 
 
 @pytest.mark.asyncio
@@ -77,6 +100,32 @@ async def test_upload_mode_prefers_uploaded_text_as_evidence():
     )
 
     assert "Uploaded memo text" in result.meta["evidence_preview"]
+
+
+@pytest.mark.asyncio
+async def test_upload_mode_truncates_large_uploaded_text_before_llm():
+    llm_provider = CapturingLLMProvider()
+    orchestrator = ThinkerOrchestrator(
+        llm_provider=llm_provider,
+        search_provider=FakeSearchProvider(),
+        scrape_provider=FakeScrapeProvider(),
+        polymarket_provider=FakePolymarketProvider(),
+    )
+    oversized_text = "A" * (UPLOAD_EVIDENCE_CHAR_BUDGET + 500)
+
+    result = await orchestrator.run(
+        mode="upload",
+        research_direction="Fed outlook",
+        uploaded_files=[{"name": "fed.txt", "text": oversized_text}],
+    )
+
+    assert llm_provider.calls
+    evidence = llm_provider.calls[0]["evidence"]
+    assert isinstance(evidence, list)
+    assert len(evidence) == 1
+    assert len(evidence[0]) == UPLOAD_EVIDENCE_CHAR_BUDGET
+    assert evidence[0] != oversized_text
+    assert result.meta["evidence_preview"] == evidence[0]
 
 
 @pytest.mark.asyncio
