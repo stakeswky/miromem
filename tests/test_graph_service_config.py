@@ -2,7 +2,33 @@
 
 from __future__ import annotations
 
+import graphiti_core.driver.falkordb_driver as falkordb_driver_module
+
 from miromem.graph_service.core.config import GraphServiceSettings
+from miromem.graph_service.core.graphiti_factory import build_graphiti
+from miromem.graph_service.core.providers import (
+    build_embedder,
+    build_graph_driver,
+    build_llm_client,
+)
+
+
+def _stub_falkordb(monkeypatch) -> dict[str, object]:
+    captured: dict[str, object] = {}
+
+    class FakeFalkorDB:
+        def __init__(self, host, port, username=None, password=None):
+            captured["host"] = host
+            captured["port"] = port
+            captured["username"] = username
+            captured["password"] = password
+
+        def select_graph(self, name):
+            captured["database"] = name
+            return object()
+
+    monkeypatch.setattr(falkordb_driver_module, "FalkorDB", FakeFalkorDB)
+    return captured
 
 
 def test_graph_service_settings_load_graphiti_fields(monkeypatch):
@@ -15,3 +41,68 @@ def test_graph_service_settings_load_graphiti_fields(monkeypatch):
     assert settings.graph_backend == "graphiti"
     assert settings.graph_service_port == 8010
     assert settings.falkordb_host == "falkor"
+
+
+def test_build_graph_driver_uses_falkor(monkeypatch):
+    captured = _stub_falkordb(monkeypatch)
+    settings = GraphServiceSettings(
+        falkordb_host="falkor",
+        falkordb_port=6379,
+        falkordb_database="mirofish_graphs",
+    )
+
+    driver = build_graph_driver(settings)
+
+    assert driver.provider.value == "falkordb"
+    assert driver._database == "mirofish_graphs"
+    assert captured == {
+        "host": "falkor",
+        "port": 6379,
+        "username": None,
+        "password": None,
+    }
+
+
+def test_build_llm_client_uses_openai_compatible_settings():
+    settings = GraphServiceSettings(
+        graph_llm_api_key="key",
+        graph_llm_base_url="https://llm.example.com/v1",
+        graph_llm_model="Qwen/Qwen2.5-72B-Instruct",
+    )
+
+    llm_client = build_llm_client(settings)
+
+    assert llm_client.config.api_key == "key"
+    assert llm_client.config.base_url == "https://llm.example.com/v1"
+    assert llm_client.config.model == "Qwen/Qwen2.5-72B-Instruct"
+
+
+def test_build_embedder_uses_openai_compatible_settings():
+    settings = GraphServiceSettings(
+        graph_embedding_api_key="key",
+        graph_embedding_base_url="https://embed.example.com/v1",
+        graph_embedding_model="Qwen/Qwen3-Embedding-0.6B",
+        graph_embedding_dim=1024,
+    )
+
+    embedder = build_embedder(settings)
+
+    assert embedder.config.api_key == "key"
+    assert embedder.config.base_url == "https://embed.example.com/v1"
+    assert embedder.config.embedding_model == "Qwen/Qwen3-Embedding-0.6B"
+    assert embedder.config.embedding_dim == 1024
+
+
+def test_build_graphiti_keeps_reranker_optional(monkeypatch):
+    _stub_falkordb(monkeypatch)
+    settings = GraphServiceSettings(
+        falkordb_database="mirofish_graphs",
+        graph_llm_api_key="",
+        graph_embedding_api_key="",
+        graph_reranker_model="",
+    )
+
+    graphiti = build_graphiti(settings)
+
+    assert graphiti.driver.provider.value == "falkordb"
+    assert type(graphiti.cross_encoder).__name__ == "DisabledReranker"
