@@ -37,6 +37,23 @@ services:
       timeout: 5s
       retries: 5
 
+  falkordb:
+    image: falkordb/falkordb-server:latest
+    container_name: miromem-falkordb
+    restart: unless-stopped
+    environment:
+      REDIS_ARGS: --appendonly yes
+      FALKORDB_ARGS: THREAD_COUNT 4
+    expose:
+      - "6379"
+    volumes:
+      - falkordb_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   elasticsearch:
     image: elasticsearch:8.15.0
     container_name: miromem-elasticsearch
@@ -139,11 +156,34 @@ services:
       - "5173:3000"
     env_file:
       - ./config/mirofish.env
+    environment:
+      GRAPH_BACKEND: ${GRAPH_BACKEND:-zep}
+      GRAPH_SERVICE_BASE_URL: ${GRAPH_SERVICE_BASE_URL:-http://graph-service:8001}
     depends_on:
       - evermemos
+      - graph-service
     volumes:
       - mirofish_uploads:/app/uploads
       - ./config/frontend.env:/app/frontend/.env:ro
+
+  graph-service:
+    build:
+      context: .
+      dockerfile: graph_service/Dockerfile
+    container_name: miromem-graph-service
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      GRAPH_BACKEND: graphiti
+      GRAPH_SERVICE_PORT: ${GRAPH_SERVICE_PORT:-8001}
+      FALKORDB_HOST: ${FALKORDB_HOST:-falkordb}
+      FALKORDB_PORT: ${FALKORDB_PORT:-6379}
+    depends_on:
+      falkordb:
+        condition: service_healthy
+    expose:
+      - "8001"
 
   # ============================================================
   # MiroMem Gateway - Unified API Entry Point
@@ -170,6 +210,7 @@ services:
 volumes:
   mongodb_data:
   redis_data:
+  falkordb_data:
   es_data:
   etcd_data:
   minio_data:

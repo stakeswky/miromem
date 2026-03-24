@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 from threading import Event, Thread
 from time import monotonic, sleep
 from types import SimpleNamespace
@@ -14,6 +15,26 @@ import pytest
 import miromem.graph_service.workers.build_worker as build_worker_module
 from miromem.graph_service.app import create_app
 from miromem.graph_service.domain.query_service import GraphQueryService
+
+
+def test_compose_wires_falkordb_and_graph_service_for_mirofish() -> None:
+    compose_text = Path("docker-compose.yaml").read_text(encoding="utf-8")
+    dockerfile_text = Path("graph_service/Dockerfile").read_text(encoding="utf-8")
+    graph_service_section = compose_text.split("\n  graph-service:\n", maxsplit=1)[1].split("\n\n  #", maxsplit=1)[0]
+    mirofish_section = compose_text.split("\n  mirofish:\n", maxsplit=1)[1].split("\n\n  #", maxsplit=1)[0]
+
+    assert "falkordb:" in compose_text
+    assert "graph-service:" in compose_text
+    assert "context: ." in compose_text
+    assert "dockerfile: graph_service/Dockerfile" in compose_text
+    assert "depends_on:" in graph_service_section
+    assert "falkordb:" in graph_service_section
+    assert "condition: service_healthy" in graph_service_section
+    assert "GRAPH_SERVICE_BASE_URL: ${GRAPH_SERVICE_BASE_URL:-http://graph-service:8001}" in mirofish_section
+    assert "GRAPH_BACKEND: ${GRAPH_BACKEND:-zep}" in mirofish_section
+    assert "miromem.graph_service.app:app" in dockerfile_text
+    assert "--port" in dockerfile_text
+    assert "8001" in dockerfile_text
 
 
 class _FakeGraphiti:

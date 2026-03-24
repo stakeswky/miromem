@@ -199,6 +199,20 @@ class _FakeGraphBackendClient:
         return {"job_id": "append-job-123", "status": "queued"}
 
 
+def test_env_template_and_readme_document_graphiti_rollout_contract() -> None:
+    env_template = Path(".env.template").read_text(encoding="utf-8")
+    readme = Path("README.md").read_text(encoding="utf-8")
+
+    assert "GRAPH_BACKEND" in env_template
+    assert "GRAPH_SERVICE_BASE_URL" in env_template
+    assert "FALKORDB_HOST" in env_template
+
+    assert "GRAPH_BACKEND=graphiti" in readme
+    assert "GRAPH_BACKEND=zep" in readme
+    assert "graph-service" in readme
+    assert "Thinker remains upstream and unchanged" in readme
+
+
 def test_config_defaults_to_zep_backend(monkeypatch):
     monkeypatch.setenv("LLM_API_KEY", "llm-key")
     monkeypatch.delenv("GRAPH_BACKEND", raising=False)
