@@ -17,6 +17,8 @@ ThinkerJobStatus = Literal[
     "materialized",
     "skipped",
 ]
+ThinkerMode = Literal["topic_only", "upload", "polymarket"]
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -24,6 +26,24 @@ def _utcnow() -> datetime:
 
 def _job_id() -> str:
     return str(uuid4())
+
+
+class ThinkerUploadedFile(BaseModel):
+    """Normalized uploaded file payload passed into Thinker."""
+
+    name: str
+    text: str = ""
+
+
+class ThinkerPolymarketEvent(BaseModel):
+    """Normalized Polymarket event payload used by Thinker."""
+
+    title: str = ""
+    description: str = ""
+    outcomes: list[str] = Field(default_factory=list)
+    url: str = ""
+    summary: str = ""
+    raw: dict[str, Any] = Field(default_factory=dict)
 
 
 class ThinkerReference(BaseModel):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -72,26 +73,72 @@ def test_create_thinker_job_returns_job_id(monkeypatch):
     assert body["status"] == "created"
 
 
-@pytest.mark.parametrize("mode", ["upload", "polymarket"])
-def test_create_thinker_job_rejects_unimplemented_modes_without_creating_job(monkeypatch, mode):
-    def _unexpected_create_task(coro):
-        coro.close()
-        raise AssertionError("background task should not be scheduled for unimplemented modes")
-
-    monkeypatch.setattr(thinker_api.asyncio, "create_task", _unexpected_create_task)
+def test_create_thinker_job_accepts_polymarket_mode():
     client = _client()
+    thinker_api._orchestrator = _CapturingOrchestrator()
 
     response = client.post(
         "/api/v1/thinker/jobs",
         json={
-            "mode": mode,
-            "research_direction": "Fed outlook",
+            "mode": "polymarket",
+            "research_direction": "Election pricing drift",
+            "polymarket_event": {
+                "title": "Will X win?",
+                "description": "Market event",
+            },
         },
     )
 
-    assert response.status_code == 501
-    assert response.json() == {"detail": f"Thinker mode '{mode}' is not implemented yet"}
-    assert thinker_api._get_job_store()._jobs == {}
+    assert response.status_code == 200
+    body = _wait_for_job_status(client, response.json()["job_id"], "succeeded")
+    assert body["mode"] == "polymarket"
+    assert thinker_api._orchestrator.calls == [
+        {
+            "mode": "polymarket",
+            "research_direction": "Election pricing drift",
+            "seed_text": "",
+            "uploaded_files": [],
+            "polymarket_event": {
+                "title": "Will X win?",
+                "description": "Market event",
+            },
+        }
+    ]
+
+
+def test_create_thinker_job_accepts_upload_multipart_and_extracts_text():
+    client = _client()
+    thinker_api._orchestrator = _CapturingOrchestrator()
+
+    response = client.post(
+        "/api/v1/thinker/jobs",
+        data={
+            "mode": "upload",
+            "research_direction": "Fed outlook",
+            "seed_text": "Fallback memo text",
+        },
+        files=[
+            ("files", ("fed.txt", b"Uploaded memo text", "text/plain")),
+        ],
+    )
+
+    assert response.status_code == 200
+    body = _wait_for_job_status(client, response.json()["job_id"], "succeeded")
+    assert body["mode"] == "upload"
+    assert thinker_api._orchestrator.calls == [
+        {
+            "mode": "upload",
+            "research_direction": "Fed outlook",
+            "seed_text": "Fallback memo text",
+            "uploaded_files": [
+                {
+                    "name": "fed.txt",
+                    "text": "Uploaded memo text",
+                }
+            ],
+            "polymarket_event": None,
+        }
+    ]
 
 
 def test_create_thinker_job_rejects_invalid_mode():
@@ -139,6 +186,24 @@ def test_get_thinker_job_returns_created_status(monkeypatch):
 class _FailingOrchestrator:
     async def run(self, *, mode: str, research_direction: str, **_: object) -> ThinkerResult:
         raise RuntimeError("Thinker LLM provider is not configured: missing THINKER_LLM_API_KEY")
+
+
+class _CapturingOrchestrator:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def run(self, **kwargs: Any) -> ThinkerResult:
+        payload = dict(kwargs)
+        payload["uploaded_files"] = [
+            item.model_dump() if hasattr(item, "model_dump") else item
+            for item in payload.get("uploaded_files", [])
+        ]
+        self.calls.append(payload)
+        return ThinkerResult(
+            expanded_topics=["Fed policy path"],
+            enriched_seed_text="Normalized thinker seed",
+            suggested_simulation_prompt="Simulate the most likely market path.",
+        )
 
 
 def test_failed_job_returns_structured_error_shape():

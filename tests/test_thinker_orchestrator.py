@@ -58,3 +58,40 @@ async def test_topic_only_job_produces_topics_seed_and_prompt():
     assert result.expanded_topics
     assert result.enriched_seed_text
     assert result.suggested_simulation_prompt
+
+
+@pytest.mark.asyncio
+async def test_upload_mode_prefers_uploaded_text_as_evidence():
+    orchestrator = ThinkerOrchestrator(
+        llm_provider=FakeLLMProvider(),
+        search_provider=FakeSearchProvider(),
+        scrape_provider=FakeScrapeProvider(),
+        polymarket_provider=FakePolymarketProvider(),
+    )
+
+    result = await orchestrator.run(
+        mode="upload",
+        research_direction="Fed outlook",
+        seed_text="Uploaded memo text",
+        uploaded_files=[{"name": "fed.pdf", "text": "Uploaded memo text"}],
+    )
+
+    assert "Uploaded memo text" in result.meta["evidence_preview"]
+
+
+@pytest.mark.asyncio
+async def test_polymarket_mode_normalizes_selected_event():
+    orchestrator = ThinkerOrchestrator(
+        llm_provider=FakeLLMProvider(),
+        search_provider=FakeSearchProvider(),
+        scrape_provider=FakeScrapeProvider(),
+        polymarket_provider=FakePolymarketProvider(),
+    )
+
+    result = await orchestrator.run(
+        mode="polymarket",
+        research_direction="Election pricing drift",
+        polymarket_event={"title": "Will X win?", "description": "Market event"},
+    )
+
+    assert result.references

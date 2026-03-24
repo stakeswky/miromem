@@ -3,22 +3,27 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Literal
+import json
+from typing import Any
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from pydantic import BaseModel, Field, ValidationError
 
+from miromem.thinker.file_ingest import extract_uploads
 from miromem.thinker.jobs import InMemoryThinkerJobStore
-from miromem.thinker.models import ThinkerJobStatus, ThinkerResult
+from miromem.thinker.models import (
+    ThinkerJobStatus,
+    ThinkerMode,
+    ThinkerResult,
+    ThinkerUploadedFile,
+)
 from miromem.thinker.orchestrator import ThinkerOrchestrator
 
 router = APIRouter(prefix="/api/v1/thinker", tags=["thinker"])
 
 _job_store: InMemoryThinkerJobStore | None = None
 _orchestrator: ThinkerOrchestrator | None = None
-
-ThinkerMode = Literal["topic_only", "upload", "polymarket"]
-_IMPLEMENTED_MODES: set[ThinkerMode] = {"topic_only"}
 
 
 def _get_job_store() -> InMemoryThinkerJobStore:
@@ -38,6 +43,9 @@ def _get_orchestrator() -> ThinkerOrchestrator:
 class ThinkerJobCreateRequest(BaseModel):
     mode: ThinkerMode
     research_direction: str
+    seed_text: str = ""
+    uploaded_files: list[ThinkerUploadedFile] = Field(default_factory=list)
+    polymarket_event: dict[str, Any] | None = None
 
 
 class ThinkerJobCreateResponse(BaseModel):
@@ -81,13 +89,8 @@ class ThinkerMaterializeResponse(BaseModel):
 
 
 @router.post("/jobs", response_model=ThinkerJobCreateResponse)
-async def create_job(body: ThinkerJobCreateRequest) -> ThinkerJobCreateResponse:
-    if body.mode not in _IMPLEMENTED_MODES:
-        raise HTTPException(
-            status_code=501,
-            detail=f"Thinker mode '{body.mode}' is not implemented yet",
-        )
-
+async def create_job(request: Request) -> ThinkerJobCreateResponse:
+    body = await _parse_job_create_request(request)
     job = _get_job_store().create_job(
         mode=body.mode,
         research_direction=body.research_direction,
@@ -97,6 +100,9 @@ async def create_job(body: ThinkerJobCreateRequest) -> ThinkerJobCreateResponse:
             job.job_id,
             mode=body.mode,
             research_direction=body.research_direction,
+            seed_text=body.seed_text,
+            uploaded_files=body.uploaded_files,
+            polymarket_event=body.polymarket_event,
         )
     )
     return ThinkerJobCreateResponse(job_id=job.job_id, status=job.status)
@@ -150,6 +156,9 @@ async def _execute_job(
     *,
     mode: ThinkerMode,
     research_direction: str,
+    seed_text: str = "",
+    uploaded_files: list[ThinkerUploadedFile] | None = None,
+    polymarket_event: dict[str, Any] | None = None,
 ) -> None:
     store = _get_job_store()
     try:
@@ -157,6 +166,9 @@ async def _execute_job(
         result = await _get_orchestrator().run(
             mode=mode,
             research_direction=research_direction,
+            seed_text=seed_text,
+            uploaded_files=uploaded_files or [],
+            polymarket_event=polymarket_event,
         )
     except Exception as exc:
         error_code, retryable = _classify_job_error(exc)
@@ -181,3 +193,62 @@ def _classify_job_error(exc: Exception) -> tuple[str, bool]:
     if exc.__class__.__module__.startswith(("httpx", "openai")):
         return "provider_unavailable", True
     return "thinker_execution_failed", True
+
+
+async def _parse_job_create_request(request: Request) -> ThinkerJobCreateRequest:
+    content_type = request.headers.get("content-type", "")
+    if content_type.startswith("multipart/form-data"):
+        return await _parse_multipart_job_create_request(request)
+
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid Thinker job payload") from exc
+
+    return _validate_job_create_request(payload)
+
+
+async def _parse_multipart_job_create_request(request: Request) -> ThinkerJobCreateRequest:
+    form = await request.form()
+    payload: dict[str, Any] = {
+        "mode": form.get("mode"),
+        "research_direction": form.get("research_direction"),
+        "seed_text": form.get("seed_text", ""),
+        "uploaded_files": [],
+        "polymarket_event": None,
+    }
+
+    polymarket_event = form.get("polymarket_event")
+    if polymarket_event not in (None, ""):
+        if not isinstance(polymarket_event, str):
+            raise HTTPException(
+                status_code=400,
+                detail="polymarket_event must be JSON text in multipart requests",
+            )
+        try:
+            payload["polymarket_event"] = json.loads(polymarket_event)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="polymarket_event must be valid JSON",
+            ) from exc
+
+    files = [
+        candidate
+        for key, candidate in form.multi_items()
+        if key == "files" and hasattr(candidate, "filename")
+    ]
+    if payload["mode"] == "upload":
+        try:
+            payload["uploaded_files"] = await extract_uploads(files)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return _validate_job_create_request(payload)
+
+
+def _validate_job_create_request(payload: Any) -> ThinkerJobCreateRequest:
+    try:
+        return ThinkerJobCreateRequest.model_validate(payload)
+    except ValidationError as exc:
+        raise RequestValidationError(exc.errors()) from exc
