@@ -81,6 +81,15 @@ async def proxy_mirofish_report(request: Request, path: str):
     return await _proxy(request, config.mirofish.base_url, f"/api/report/{path}")
 
 
+# --- Proxy: MiroFish Polymarket API ---
+
+
+@app.api_route("/api/polymarket/{path:path}", methods=["GET"])
+async def proxy_mirofish_polymarket(request: Request, path: str):
+    """Proxy Polymarket requests to MiroFish backend."""
+    return await _proxy(request, config.mirofish.base_url, f"/api/polymarket/{path}")
+
+
 # --- MiroMem Native: Knowledge Graph Extension ---
 
 app.include_router(graph_router)
