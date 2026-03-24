@@ -15,7 +15,7 @@ class InMemoryThinkerJobStore:
     """Manage Thinker jobs without external persistence."""
 
     _ALLOWED_TRANSITIONS: dict[ThinkerJobStatus, set[ThinkerJobStatus]] = {
-        "created": {"running"},
+        "created": {"running", "failed"},
         "running": {"succeeded", "failed"},
         "succeeded": {"materialized"},
         "failed": {"created", "skipped"},

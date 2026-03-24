@@ -8,8 +8,6 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
-ThinkerJobMode = Literal["topic_only", "upload", "polymarket"]
-
 ThinkerJobStatus = Literal[
     "created",
     "running",
@@ -34,7 +32,7 @@ class ThinkerJob(BaseModel):
     model_config = ConfigDict(validate_assignment=True)
 
     job_id: str = Field(default_factory=_job_id)
-    mode: ThinkerJobMode
+    mode: str
     research_direction: str
     status: ThinkerJobStatus = "created"
     error_code: str | None = None
