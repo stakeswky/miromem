@@ -259,6 +259,23 @@ export function buildThinkerMaterializePayload(jobId, draft = {}) {
   }
 }
 
+export function shouldPreservePolymarketThinkerSession(options = {}) {
+  const thinkerJobId = toStringValue(options.thinkerJobId ?? options.jobId).trim()
+  const thinkerJobMode = toStringValue(options.thinkerJobMode ?? options.jobMode).trim()
+  const selectedEventId = toStringValue(options.selectedEventId).trim()
+  const snapshotEventId = toStringValue(
+    options.snapshotEventId ?? options.polymarketEventId
+  ).trim()
+
+  return (
+    thinkerJobId !== '' &&
+    thinkerJobMode === 'polymarket' &&
+    selectedEventId !== '' &&
+    snapshotEventId !== '' &&
+    selectedEventId === snapshotEventId
+  )
+}
+
 export function buildThinkerPendingUploadPayload(materialized, options = {}) {
   const normalized = normalizeThinkerMaterialized(materialized)
   const baseFiles = normalizeFiles(options.baseFiles ?? options.files)

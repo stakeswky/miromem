@@ -462,7 +462,8 @@ import {
   normalizeThinkerAvailableActions,
   normalizeThinkerJobState,
   pollThinkerJobUntilTerminal,
-  resolveThinkerPollErrorState
+  resolveThinkerPollErrorState,
+  shouldPreservePolymarketThinkerSession
 } from '../utils/thinker'
 
 const router = useRouter()
@@ -520,6 +521,15 @@ const thinkerHasJobOnAnotherTab = computed(() => (
   thinkerJobId.value !== '' &&
   thinkerJobMode.value !== '' &&
   thinkerJobMode.value !== activeTab.value
+))
+
+const thinkerPolymarketSessionLocked = computed(() => (
+  shouldPreservePolymarketThinkerSession({
+    thinkerJobId: thinkerJobId.value,
+    thinkerJobMode: thinkerJobMode.value,
+    selectedEventId: selectedEvent.value?.id,
+    snapshotEventId: thinkerInputSnapshot.value.polymarketEvent?.id
+  })
 ))
 
 // 计算属性:是否可以提交
@@ -828,9 +838,18 @@ const resetThinkerState = () => {
 }
 
 const handleThinkerToggleChange = () => {
-  if (!thinkerEnabled.value) {
-    resetThinkerState()
+  if (thinkerEnabled.value) {
+    thinkerError.value = ''
+    return
   }
+
+  if (thinkerPolymarketSessionLocked.value) {
+    thinkerEnabled.value = true
+    thinkerError.value = '当前 Polymarket Thinker 任务仍在生效，请先跳过该任务后再关闭 Thinker。'
+    return
+  }
+
+  resetThinkerState()
 }
 
 const applyThinkerJobState = (job, options = {}) => {
