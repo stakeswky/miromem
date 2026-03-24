@@ -1,14 +1,19 @@
 import assert from 'node:assert/strict'
+import { File as NodeFile } from 'node:buffer'
 
-import {
+if (typeof globalThis.File === 'undefined') {
+  globalThis.File = NodeFile
+}
+
+const {
   buildThinkerSeedFile,
   normalizeThinkerMaterialized
-} from '../src/utils/thinker.js'
-import {
+} = await import('../src/utils/thinker.js')
+const {
   clearPendingUpload,
   getPendingUpload,
   setPendingUpload
-} from '../src/store/pendingUpload.js'
+} = await import('../src/store/pendingUpload.js')
 
 async function testExplicitEmptyPromptPreserved() {
   clearPendingUpload()
