@@ -39,8 +39,11 @@ packages = [
     "miromem.gateway",
     "miromem.graph",
     "miromem.graph_service",
+    "miromem.graph_service.api",
     "miromem.graph_service.core",
+    "miromem.graph_service.domain",
     "miromem.graph_service.storage",
+    "miromem.graph_service.workers",
     "miromem.simulation",
 ]
 package-dir = { miromem = "." }
