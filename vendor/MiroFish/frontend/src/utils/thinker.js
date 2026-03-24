@@ -71,14 +71,15 @@ export async function pollThinkerJobUntilTerminal(jobId, getJob, options = {}) {
 }
 
 export function normalizeThinkerMaterialized(materialized = {}) {
-  const finalSimulationRequirement = toStringValue(
-    materialized?.final_simulation_requirement
-  )
+  const finalTopics = materialized?.final_topics ?? materialized?.finalTopics
+  const finalSeedText = materialized?.final_seed_text ?? materialized?.finalSeedText
+  const finalSimulationRequirement = materialized?.final_simulation_requirement
+    ?? materialized?.finalSimulationRequirement
 
   return {
-    finalTopics: normalizeTopics(materialized?.final_topics),
-    finalSeedText: toStringValue(materialized?.final_seed_text),
-    finalSimulationRequirement
+    finalTopics: normalizeTopics(finalTopics),
+    finalSeedText: toStringValue(finalSeedText),
+    finalSimulationRequirement: toStringValue(finalSimulationRequirement)
   }
 }
 

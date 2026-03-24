@@ -66,10 +66,10 @@ const normalizePendingUpload = (filesOrPayload, requirement) => {
 
     return {
       files,
-      simulationRequirement: finalSimulationRequirement || fallbackRequirement,
+      simulationRequirement: finalSimulationRequirement,
       finalTopics: normalizeTopics(filesOrPayload.finalTopics),
       finalSeedText: toStringValue(filesOrPayload.finalSeedText),
-      finalSimulationRequirement: finalSimulationRequirement || fallbackRequirement,
+      finalSimulationRequirement,
       isPending: files.length > 0
     }
   }
