@@ -34,6 +34,24 @@ const normalizeTopics = topics => {
     .filter(Boolean)
 }
 
+const normalizeFiles = files => {
+  if (!files) {
+    return []
+  }
+
+  if (Array.isArray(files)) {
+    return files.filter(Boolean)
+  }
+
+  return Array.from(files).filter(Boolean)
+}
+
+const normalizePolymarketEvent = event => (
+  event && !Array.isArray(event) && typeof event === 'object'
+    ? event
+    : null
+)
+
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
 
 export const THINKER_TERMINAL_STATUSES = Object.freeze([...TERMINAL_STATUSES])
@@ -165,6 +183,49 @@ export function normalizeThinkerMaterialized(materialized = {}) {
   }
 }
 
+export function buildThinkerJobPayload(options = {}) {
+  const mode = toStringValue(options.mode).trim()
+  const researchDirection = toStringValue(
+    options.researchDirection ?? options.research_direction
+  )
+  const seedText = toStringValue(options.seedText ?? options.seed_text)
+  const files = normalizeFiles(options.files)
+  const polymarketEvent = normalizePolymarketEvent(
+    options.polymarketEvent ?? options.polymarket_event
+  )
+
+  if (mode === 'upload') {
+    const payload = new FormData()
+    payload.append('mode', mode)
+    payload.append('research_direction', researchDirection)
+
+    if (seedText !== '') {
+      payload.append('seed_text', seedText)
+    }
+
+    files.forEach(file => {
+      payload.append('files', file)
+    })
+
+    return payload
+  }
+
+  const payload = {
+    mode,
+    research_direction: researchDirection
+  }
+
+  if (seedText !== '') {
+    payload.seed_text = seedText
+  }
+
+  if (mode === 'polymarket' && polymarketEvent) {
+    payload.polymarket_event = polymarketEvent
+  }
+
+  return payload
+}
+
 export function buildThinkerSeedFile(materialized, options = {}) {
   const normalized = normalizeThinkerMaterialized(materialized)
   const fileName = toStringValue(options.fileName).trim() || DEFAULT_SEED_FILE_NAME
@@ -180,6 +241,35 @@ export function hydrateThinkerDraft(result = {}) {
     expandedTopics: normalizeTopics(result?.expanded_topics),
     enrichedSeedText: toStringValue(result?.enriched_seed_text),
     suggestedSimulationPrompt: toStringValue(result?.suggested_simulation_prompt)
+  }
+}
+
+export function buildThinkerMaterializePayload(jobId, draft = {}) {
+  return {
+    job_id: toStringValue(jobId).trim(),
+    adopted: {
+      expanded_topics: normalizeTopics(draft?.expandedTopics ?? draft?.expanded_topics),
+      enriched_seed_text: toStringValue(
+        draft?.enrichedSeedText ?? draft?.enriched_seed_text
+      ),
+      suggested_simulation_prompt: toStringValue(
+        draft?.suggestedSimulationPrompt ?? draft?.suggested_simulation_prompt
+      )
+    }
+  }
+}
+
+export function buildThinkerPendingUploadPayload(materialized, options = {}) {
+  const normalized = normalizeThinkerMaterialized(materialized)
+  const baseFiles = normalizeFiles(options.baseFiles ?? options.files)
+  const syntheticSeedFile = buildThinkerSeedFile(normalized, options)
+
+  return {
+    files: [...baseFiles, syntheticSeedFile],
+    simulationRequirement: normalized.finalSimulationRequirement,
+    finalTopics: normalized.finalTopics,
+    finalSeedText: normalized.finalSeedText,
+    finalSimulationRequirement: normalized.finalSimulationRequirement
   }
 }
 

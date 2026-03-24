@@ -6,6 +6,9 @@ if (typeof globalThis.File === 'undefined') {
 }
 
 const {
+  buildThinkerJobPayload,
+  buildThinkerMaterializePayload,
+  buildThinkerPendingUploadPayload,
   buildThinkerSeedFile,
   normalizeThinkerAvailableActions,
   normalizeThinkerMaterialized,
@@ -106,6 +109,79 @@ async function testCreatePendingUploadPayloadForThinkerAdoption() {
   assert.equal(payload.finalSeedText, '# Draft')
 }
 
+async function testBuildThinkerJobPayloadForUpload() {
+  const uploadFile = new File(['upload'], 'upload.txt', { type: 'text/plain' })
+
+  const payload = buildThinkerJobPayload({
+    mode: 'upload',
+    researchDirection: 'simulate upload',
+    files: [uploadFile]
+  })
+
+  assert.equal(payload.get('mode'), 'upload')
+  assert.equal(payload.get('research_direction'), 'simulate upload')
+  assert.deepEqual(
+    payload.getAll('files'),
+    [uploadFile],
+    'upload thinker payload should keep the original file objects'
+  )
+}
+
+async function testBuildThinkerJobPayloadForPolymarket() {
+  const event = { id: 'market-1', title: 'Fed event' }
+
+  const payload = buildThinkerJobPayload({
+    mode: 'polymarket',
+    researchDirection: 'simulate polymarket',
+    polymarketEvent: event
+  })
+
+  assert.deepEqual(payload, {
+    mode: 'polymarket',
+    research_direction: 'simulate polymarket',
+    polymarket_event: event
+  })
+}
+
+async function testBuildThinkerMaterializePayloadUsesEditableDraft() {
+  const payload = buildThinkerMaterializePayload('job-123', {
+    expandedTopics: [' Macro ', '', 'Rates'],
+    enrichedSeedText: '# Adopted seed',
+    suggestedSimulationPrompt: 'Use the adopted prompt'
+  })
+
+  assert.deepEqual(payload, {
+    job_id: 'job-123',
+    adopted: {
+      expanded_topics: ['Macro', 'Rates'],
+      enriched_seed_text: '# Adopted seed',
+      suggested_simulation_prompt: 'Use the adopted prompt'
+    }
+  })
+}
+
+async function testBuildThinkerPendingUploadPayloadForPolymarketAdoption() {
+  const payload = buildThinkerPendingUploadPayload({
+    final_topics: ['Macro'],
+    final_seed_text: '# Synthetic seed',
+    final_simulation_requirement: 'Use final simulation requirement'
+  })
+
+  assert.equal(
+    payload.simulationRequirement,
+    'Use final simulation requirement',
+    'materialized final_simulation_requirement should replace the pending upload prompt'
+  )
+  assert.equal(payload.finalSimulationRequirement, 'Use final simulation requirement')
+  assert.equal(payload.files.length, 1)
+  assert.equal(payload.files[0].name, 'thinker_enriched_seed.md')
+  assert.equal(
+    await payload.files[0].text(),
+    '# Synthetic seed',
+    'polymarket adopt should synthesize a single seed file from final_seed_text'
+  )
+}
+
 async function testNormalizeThinkerAvailableActions() {
   assert.deepEqual(
     normalizeThinkerAvailableActions(['retry', 'skip', 'skip', 'unknown']),
@@ -171,6 +247,10 @@ async function main() {
   await testNormalizeThenBuildSeedFileFlow()
   await testLegacyPendingUploadSignature()
   await testCreatePendingUploadPayloadForThinkerAdoption()
+  await testBuildThinkerJobPayloadForUpload()
+  await testBuildThinkerJobPayloadForPolymarket()
+  await testBuildThinkerMaterializePayloadUsesEditableDraft()
+  await testBuildThinkerPendingUploadPayloadForPolymarketAdoption()
   await testNormalizeThinkerAvailableActions()
   await testResolveThinkerPollErrorStateKeepsTransportFailureSeparate()
   await testResolveThinkerPollErrorStateUsesServerActionsForTerminalFailure()
