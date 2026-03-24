@@ -10,6 +10,7 @@ from miromem.thinker.models import (
     ThinkerJobStatus,
     ThinkerResult,
     ThinkerUploadedFile,
+    thinker_available_actions,
 )
 
 _UNSET = object()
@@ -101,6 +102,12 @@ class InMemoryThinkerJobStore:
         )
 
     def mark_materialized(self, job_id: str) -> ThinkerJob:
+        job = self._require_job(job_id)
+        if job.status != "succeeded":
+            raise ValueError("Thinker job is not ready to materialize")
+        if job.result is None:
+            raise ValueError("Thinker job cannot be materialized without a stored result")
+
         return self._transition(
             job_id,
             "materialized",
@@ -111,12 +118,24 @@ class InMemoryThinkerJobStore:
         )
 
     def mark_skipped(self, job_id: str) -> ThinkerJob:
+        job = self._require_job(job_id)
+        if "skip" not in thinker_available_actions(
+            status=job.status,
+            retryable=job.retryable,
+            can_continue_without_thinker=job.can_continue_without_thinker,
+        ):
+            raise ValueError("Thinker job cannot be skipped.")
+
         return self._transition(job_id, "skipped")
 
     def retry_job(self, job_id: str) -> ThinkerJob:
         job = self._require_job(job_id)
-        if job.status != "failed":
-            raise ValueError("Only failed jobs can be retried.")
+        if "retry" not in thinker_available_actions(
+            status=job.status,
+            retryable=job.retryable,
+            can_continue_without_thinker=job.can_continue_without_thinker,
+        ):
+            raise ValueError("Thinker job cannot be retried.")
 
         return self._transition(
             job_id,

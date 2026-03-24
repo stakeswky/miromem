@@ -32,6 +32,22 @@ def test_failed_job_can_be_retried_but_succeeded_job_cannot():
         store.retry_job(completed.job_id)
 
 
+def test_failed_job_requires_retryable_flag_for_retry():
+    store = InMemoryThinkerJobStore()
+    job = store.create_job(mode="topic_only", research_direction="Fed outlook")
+    store.mark_failed(
+        job.job_id,
+        error_code="upstream_error",
+        error_message="timeout",
+        retryable=False,
+    )
+
+    with pytest.raises(ValueError):
+        store.retry_job(job.job_id)
+
+    assert store.get_job(job.job_id).status == "failed"
+
+
 def test_retry_preserves_original_inputs_for_reexecution():
     parameters = inspect.signature(InMemoryThinkerJobStore.create_job).parameters
     assert "seed_text" in parameters
@@ -70,7 +86,7 @@ def test_retry_to_success_clears_failure_metadata():
         job.job_id,
         error_code="upstream_error",
         error_message="timeout",
-        retryable=False,
+        retryable=True,
         can_continue_without_thinker=False,
     )
 
@@ -115,6 +131,23 @@ def test_failed_job_can_be_skipped():
 
     assert skipped.status == "skipped"
 
+
+def test_failed_job_requires_continue_without_thinker_for_skip():
+    store = InMemoryThinkerJobStore()
+    job = store.create_job(mode="topic_only", research_direction="Fed outlook")
+    store.mark_failed(
+        job.job_id,
+        error_code="upstream_error",
+        error_message="timeout",
+        can_continue_without_thinker=False,
+    )
+
+    with pytest.raises(ValueError):
+        store.mark_skipped(job.job_id)
+
+    assert store.get_job(job.job_id).status == "failed"
+
+
 def test_external_mutation_does_not_change_stored_job():
     store = InMemoryThinkerJobStore()
     job = store.create_job(mode="topic_only", research_direction="Fed outlook")
@@ -146,6 +179,19 @@ def test_materialized_job_preserves_succeeded_result():
     assert materialized.status == "materialized"
     assert materialized.result == expected_result
     assert store.get_job(job.job_id).result == expected_result
+
+
+def test_materialized_job_requires_stored_succeeded_result():
+    store = InMemoryThinkerJobStore()
+    job = store.create_job(mode="topic_only", research_direction="Fed outlook")
+
+    store.mark_running(job.job_id)
+    store.mark_succeeded(job.job_id)
+
+    with pytest.raises(ValueError):
+        store.mark_materialized(job.job_id)
+
+    assert store.get_job(job.job_id).status == "succeeded"
 
 
 def test_load_config_includes_thinker_settings(monkeypatch):

@@ -127,22 +127,30 @@ async def get_job(job_id: str) -> ThinkerJobStatusResponse:
 @router.post("/materialize", response_model=ThinkerMaterializeResponse)
 async def materialize_job(body: ThinkerMaterializeRequest) -> ThinkerMaterializeResponse:
     try:
-        job = _get_job_store().mark_materialized(body.job_id)
+        current_job = _get_job_store().get_job(body.job_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Thinker job not found") from exc
-    except ValueError as exc:
+    if current_job.status != "succeeded":
         raise HTTPException(
             status_code=409,
             detail="Thinker job is not ready to materialize",
+        )
+    try:
+        payload = _get_materializer().materialize(
+            result=current_job.result,
+            adopted=body.adopted,
+        )
+        job = _get_job_store().mark_materialized(body.job_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
         ) from exc
 
     return ThinkerMaterializeResponse(
         job_id=job.job_id,
         status=job.status,
-        payload=_get_materializer().materialize(
-            result=job.result,
-            adopted=body.adopted,
-        ),
+        payload=payload,
     )
 
 
@@ -235,7 +243,11 @@ def _build_job_status_response(job: ThinkerJob) -> ThinkerJobStatusResponse:
         error_code=job.error_code,
         error_message=job.error_message,
         retryable=job.retryable,
-        available_actions=thinker_available_actions(job.status),
+        available_actions=thinker_available_actions(
+            status=job.status,
+            retryable=job.retryable,
+            can_continue_without_thinker=job.can_continue_without_thinker,
+        ),
         can_continue_without_thinker=job.can_continue_without_thinker,
     )
 

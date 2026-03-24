@@ -18,7 +18,10 @@ class ThinkerMaterializer:
         result: ThinkerResult | None,
         adopted: ThinkerAdoptedInput,
     ) -> ThinkerMaterializedPayload:
-        stored = result or ThinkerResult()
+        if result is None:
+            raise ValueError("Thinker job cannot be materialized without a stored result")
+
+        stored = result
         return ThinkerMaterializedPayload(
             final_topics=(
                 adopted.expanded_topics

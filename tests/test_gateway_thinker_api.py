@@ -43,7 +43,11 @@ def _create_succeeded_job() -> str:
     return job.job_id
 
 
-def _create_failed_job() -> str:
+def _create_failed_job(
+    *,
+    retryable: bool = True,
+    can_continue_without_thinker: bool = True,
+) -> str:
     store = thinker_api._get_job_store()
     job = store.create_job(
         mode="topic_only",
@@ -54,7 +58,8 @@ def _create_failed_job() -> str:
         job.job_id,
         error_code="provider_unavailable",
         error_message="timeout",
-        retryable=True,
+        retryable=retryable,
+        can_continue_without_thinker=can_continue_without_thinker,
     )
     return job.job_id
 
@@ -318,7 +323,7 @@ def test_failed_job_returns_structured_error_shape():
         "error_code": "provider_misconfigured",
         "error_message": "Thinker LLM provider is not configured: missing THINKER_LLM_API_KEY",
         "retryable": False,
-        "available_actions": ["retry", "skip"],
+        "available_actions": ["skip"],
         "can_continue_without_thinker": True,
     }
 
@@ -353,6 +358,35 @@ def test_materialize_returns_409_for_non_succeeded_job():
     assert response.status_code == 409
     assert response.json() == {"detail": "Thinker job is not ready to materialize"}
     assert thinker_api._get_job_store().get_job(job.job_id).status == "created"
+
+
+def test_materialize_returns_409_when_succeeded_job_has_no_stored_result():
+    client = _client()
+    store = thinker_api._get_job_store()
+    job = store.create_job(
+        mode="topic_only",
+        research_direction="Fed outlook",
+    )
+    store.mark_running(job.job_id)
+    store.mark_succeeded(job.job_id)
+
+    response = client.post(
+        "/api/v1/thinker/materialize",
+        json={
+            "job_id": job.job_id,
+            "adopted": {
+                "expanded_topics": ["Fed", "inflation"],
+                "enriched_seed_text": "edited seed",
+                "suggested_simulation_prompt": "edited prompt",
+            },
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": "Thinker job cannot be materialized without a stored result"
+    }
+    assert thinker_api._get_job_store().get_job(job.job_id).status == "succeeded"
 
 
 def test_materialize_allows_user_edits_and_falls_back_to_stored_result():
@@ -405,6 +439,18 @@ def test_retry_recreates_failed_job_in_created_state(monkeypatch):
     assert thinker_api._get_job_store().get_job(job_id).status == "created"
 
 
+def test_retry_returns_409_when_failed_job_is_not_retryable(monkeypatch):
+    _disable_background_tasks(monkeypatch)
+    client = _client()
+    job_id = _create_failed_job(retryable=False, can_continue_without_thinker=True)
+
+    response = client.post(f"/api/v1/thinker/jobs/{job_id}/retry")
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "Thinker job cannot be retried"}
+    assert thinker_api._get_job_store().get_job(job_id).status == "failed"
+
+
 def test_skip_marks_job_as_skipped():
     client = _client()
     job_id = _create_failed_job()
@@ -425,3 +471,14 @@ def test_skip_marks_job_as_skipped():
         "can_continue_without_thinker": True,
     }
     assert thinker_api._get_job_store().get_job(job_id).status == "skipped"
+
+
+def test_skip_returns_409_when_failed_job_cannot_continue_without_thinker():
+    client = _client()
+    job_id = _create_failed_job(retryable=True, can_continue_without_thinker=False)
+
+    response = client.post(f"/api/v1/thinker/jobs/{job_id}/skip")
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "Thinker job cannot be skipped"}
+    assert thinker_api._get_job_store().get_job(job_id).status == "failed"

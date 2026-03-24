@@ -29,10 +29,21 @@ def _job_id() -> str:
     return str(uuid4())
 
 
-def thinker_available_actions(status: ThinkerJobStatus) -> list[ThinkerJobAction]:
-    if status == "failed":
-        return ["retry", "skip"]
-    return []
+def thinker_available_actions(
+    *,
+    status: ThinkerJobStatus,
+    retryable: bool | None = None,
+    can_continue_without_thinker: bool = True,
+) -> list[ThinkerJobAction]:
+    if status != "failed":
+        return []
+
+    actions: list[ThinkerJobAction] = []
+    if retryable:
+        actions.append("retry")
+    if can_continue_without_thinker:
+        actions.append("skip")
+    return actions
 
 
 class ThinkerUploadedFile(BaseModel):
