@@ -38,6 +38,20 @@ def test_create_thinker_job_returns_job_id():
     assert body["status"] == "created"
 
 
+def test_create_thinker_job_rejects_invalid_mode():
+    client = _client()
+    response = client.post(
+        "/api/v1/thinker/jobs",
+        json={
+            "mode": "unsupported",
+            "research_direction": "Fed outlook",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"][-1] == "mode"
+
+
 def test_get_thinker_job_returns_created_status():
     client = _client()
     create_response = client.post(
@@ -70,7 +84,31 @@ def test_missing_job_returns_404():
     assert response.json() == {"detail": "Thinker job not found"}
 
 
-def test_materialize_returns_placeholder_payload():
+def test_materialize_returns_409_for_non_succeeded_job():
+    client = _client()
+    job = thinker_api._get_job_store().create_job(
+        mode="topic_only",
+        research_direction="Fed outlook",
+    )
+
+    response = client.post(
+        "/api/v1/thinker/materialize",
+        json={
+            "job_id": job.job_id,
+            "adopted": {
+                "expanded_topics": ["Fed", "inflation"],
+                "enriched_seed_text": "edited seed",
+                "suggested_simulation_prompt": "edited prompt",
+            },
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "Thinker job is not ready to materialize"}
+    assert thinker_api._get_job_store().get_job(job.job_id).status == "created"
+
+
+def test_materialize_echoes_adopted_fields_without_mutating_job_state():
     client = _client()
     job_id = _create_succeeded_job()
 
@@ -89,10 +127,11 @@ def test_materialize_returns_placeholder_payload():
     assert response.status_code == 200
     assert response.json() == {
         "job_id": job_id,
-        "status": "materialized",
+        "status": "succeeded",
         "payload": {
-            "final_topics": [],
-            "final_seed_text": "",
-            "final_simulation_requirement": "",
+            "final_topics": ["Fed", "inflation"],
+            "final_seed_text": "edited seed",
+            "final_simulation_requirement": "edited prompt",
         },
     }
+    assert thinker_api._get_job_store().get_job(job_id).status == "succeeded"
