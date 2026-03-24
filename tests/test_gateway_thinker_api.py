@@ -108,7 +108,7 @@ def test_materialize_returns_409_for_non_succeeded_job():
     assert thinker_api._get_job_store().get_job(job.job_id).status == "created"
 
 
-def test_materialize_echoes_adopted_fields_without_mutating_job_state():
+def test_materialize_marks_job_materialized_and_echoes_adopted_fields():
     client = _client()
     job_id = _create_succeeded_job()
 
@@ -127,11 +127,11 @@ def test_materialize_echoes_adopted_fields_without_mutating_job_state():
     assert response.status_code == 200
     assert response.json() == {
         "job_id": job_id,
-        "status": "succeeded",
+        "status": "materialized",
         "payload": {
             "final_topics": ["Fed", "inflation"],
             "final_seed_text": "edited seed",
             "final_simulation_requirement": "edited prompt",
         },
     }
-    assert thinker_api._get_job_store().get_job(job_id).status == "succeeded"
+    assert thinker_api._get_job_store().get_job(job_id).status == "materialized"
