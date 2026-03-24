@@ -10,6 +10,7 @@ const {
   normalizeThinkerMaterialized
 } = await import('../src/utils/thinker.js')
 const {
+  createPendingUploadPayload,
   clearPendingUpload,
   getPendingUpload,
   setPendingUpload
@@ -74,10 +75,40 @@ async function testLegacyPendingUploadSignature() {
   assert.equal(pending.isPending, true)
 }
 
+async function testCreatePendingUploadPayloadForThinkerAdoption() {
+  const originalFile = new File(['original'], 'seed.txt', { type: 'text/plain' })
+  const syntheticSeedFile = new File(['# Draft'], 'thinker_enriched_seed.md', {
+    type: 'text/markdown'
+  })
+
+  const payload = createPendingUploadPayload({
+    files: [originalFile, syntheticSeedFile],
+    simulationRequirement: 'original prompt',
+    finalTopics: [' Macro ', '', 'Rates'],
+    finalSeedText: '# Draft',
+    finalSimulationRequirement: 'final prompt'
+  })
+
+  assert.deepEqual(
+    payload.files,
+    [originalFile, syntheticSeedFile],
+    'helper should preserve both original uploads and the synthetic seed file'
+  )
+  assert.equal(
+    payload.simulationRequirement,
+    'final prompt',
+    'helper should expose the adopted prompt as the downstream simulation requirement'
+  )
+  assert.equal(payload.finalSimulationRequirement, 'final prompt')
+  assert.deepEqual(payload.finalTopics, ['Macro', 'Rates'])
+  assert.equal(payload.finalSeedText, '# Draft')
+}
+
 async function main() {
   await testExplicitEmptyPromptPreserved()
   await testNormalizeThenBuildSeedFileFlow()
   await testLegacyPendingUploadSignature()
+  await testCreatePendingUploadPayloadForThinkerAdoption()
   clearPendingUpload()
   console.log('thinker smoke check passed')
 }

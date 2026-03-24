@@ -87,6 +87,18 @@ const normalizePendingUpload = (filesOrPayload, requirement) => {
   }
 }
 
+export function createPendingUploadPayload(filesOrPayload, requirement = '') {
+  const normalized = normalizePendingUpload(filesOrPayload, requirement)
+
+  return {
+    files: normalized.files,
+    simulationRequirement: normalized.simulationRequirement,
+    finalTopics: normalized.finalTopics,
+    finalSeedText: normalized.finalSeedText,
+    finalSimulationRequirement: normalized.finalSimulationRequirement
+  }
+}
+
 export function setPendingUpload(filesOrPayload, requirement = '') {
   const normalized = normalizePendingUpload(filesOrPayload, requirement)
 

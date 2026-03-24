@@ -159,7 +159,7 @@
                     accept=".pdf,.md,.txt"
                     @change="handleFileSelect"
                     style="display: none"
-                    :disabled="loading"
+                    :disabled="uploadInputsDisabled"
                   />
 
                   <div v-if="files.length === 0" class="upload-placeholder">
@@ -172,7 +172,11 @@
                     <div v-for="(file, index) in files" :key="index" class="file-item">
                       <span class="file-icon">📄</span>
                       <span class="file-name">{{ file.name }}</span>
-                      <button @click.stop="removeFile(index)" class="remove-btn">×</button>
+                      <button
+                        @click.stop="removeFile(index)"
+                        class="remove-btn"
+                        :disabled="uploadInputsDisabled"
+                      >×</button>
                     </div>
                   </div>
                 </div>
@@ -194,9 +198,122 @@
                     class="code-input"
                     placeholder="// 用自然语言输入模拟或预测需求（例.武大若发布撤销肖某处分的公告，会引发什么舆情走向）"
                     rows="6"
-                    :disabled="loading"
+                    :disabled="uploadInputsDisabled"
                   ></textarea>
                   <div class="model-badge">引擎: MiroFish-V1.0</div>
+                </div>
+              </div>
+
+              <div class="console-section thinker-section">
+                <div class="console-divider"><span>Thinker</span></div>
+
+                <label class="thinker-toggle">
+                  <input
+                    v-model="thinkerEnabled"
+                    type="checkbox"
+                    :disabled="loading"
+                    @change="handleThinkerToggleChange"
+                  >
+                  <span class="thinker-toggle-text">
+                    <strong>启用 Thinker 预处理</strong>
+                    <span>先扩展议题并补全文档种子，再决定是否进入原有模拟流程。</span>
+                  </span>
+                </label>
+
+                <div v-if="thinkerEnabled" class="thinker-panel">
+                  <div class="thinker-status-row">
+                    <span class="thinker-status-label">状态</span>
+                    <span
+                      class="thinker-status-badge"
+                      :class="`status-${thinkerStatus || 'idle'}`"
+                    >
+                      {{ formatThinkerStatus(thinkerStatus) }}
+                    </span>
+                  </div>
+
+                  <p v-if="!thinkerJobId" class="thinker-help">
+                    Thinker 会基于当前上传文件和模拟提示词生成一份可编辑草稿，确认后再继续。
+                  </p>
+
+                  <p
+                    v-else-if="thinkerStatus === 'created' || thinkerStatus === 'running'"
+                    class="thinker-help"
+                  >
+                    Thinker 正在分析上传内容，请等待任务完成。
+                  </p>
+
+                  <div v-if="thinkerError" class="thinker-error">
+                    {{ thinkerError }}
+                  </div>
+
+                  <div v-if="thinkerStatus === 'succeeded'" class="thinker-draft">
+                    <div class="thinker-field">
+                      <label for="thinker-topics">扩展议题</label>
+                      <textarea
+                        id="thinker-topics"
+                        v-model="thinkerExpandedTopicsText"
+                        class="thinker-input"
+                        rows="3"
+                        :disabled="loading"
+                      ></textarea>
+                    </div>
+
+                    <div class="thinker-field">
+                      <label for="thinker-seed">增强现实种子</label>
+                      <textarea
+                        id="thinker-seed"
+                        v-model="thinkerResultDraft.enrichedSeedText"
+                        class="thinker-input"
+                        rows="8"
+                        :disabled="loading"
+                      ></textarea>
+                    </div>
+
+                    <div class="thinker-field">
+                      <label for="thinker-prompt">建议模拟提示词</label>
+                      <textarea
+                        id="thinker-prompt"
+                        v-model="thinkerResultDraft.suggestedSimulationPrompt"
+                        class="thinker-input"
+                        rows="5"
+                        :disabled="loading"
+                      ></textarea>
+                    </div>
+
+                    <div class="thinker-actions">
+                      <button
+                        class="thinker-primary-btn"
+                        @click="adoptUploadThinkerResult"
+                        :disabled="loading"
+                      >
+                        采用 Thinker 结果
+                      </button>
+                      <button
+                        class="thinker-secondary-btn"
+                        @click="skipUploadThinkerFlow"
+                        :disabled="loading"
+                      >
+                        跳过 Thinker
+                      </button>
+                    </div>
+                  </div>
+
+                  <div v-else-if="thinkerStatus === 'failed'" class="thinker-actions">
+                    <button
+                      class="thinker-primary-btn"
+                      @click="retryUploadThinkerFlow"
+                      :disabled="loading || !thinkerJobId"
+                    >
+                      重试 Thinker
+                    </button>
+                    <button
+                      class="thinker-secondary-btn"
+                      @click="skipUploadThinkerFlow"
+                      :disabled="loading || !thinkerJobId"
+                    >
+                      跳过 Thinker
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -284,8 +401,7 @@
                 @click="startSimulation"
                 :disabled="!canSubmit || loading"
               >
-                <span v-if="!loading">启动引擎</span>
-                <span v-else>初始化中...</span>
+                <span>{{ startButtonLabel }}</span>
                 <span class="btn-arrow">→</span>
               </button>
             </div>
@@ -304,6 +420,23 @@ import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import HistoryDatabase from '../components/HistoryDatabase.vue'
 import { getPolymarketEvents } from '../api/polymarket'
+import {
+  createThinkerJob,
+  getThinkerJob,
+  materializeThinkerJob,
+  retryThinkerJob,
+  skipThinkerJob
+} from '../api/thinker'
+import {
+  createPendingUploadPayload,
+  setPendingUpload
+} from '../store/pendingUpload.js'
+import {
+  buildThinkerSeedFile,
+  hydrateThinkerDraft,
+  normalizeThinkerMaterialized,
+  pollThinkerJobUntilTerminal
+} from '../utils/thinker'
 
 const router = useRouter()
 
@@ -320,7 +453,6 @@ const files = ref([])
 
 // 状态
 const loading = ref(false)
-const error = ref('')
 const isDragOver = ref(false)
 
 // 文件输入引用
@@ -334,18 +466,76 @@ const pmLoading = ref(false)
 const selectedEvent = ref(null)
 const pmTags = ['All', 'Crypto', 'Politics', 'Sports', 'Pop Culture', 'Science']
 
+const createEmptyThinkerDraft = () => ({
+  expandedTopics: [],
+  enrichedSeedText: '',
+  suggestedSimulationPrompt: ''
+})
+
+const thinkerEnabled = ref(false)
+const thinkerJobId = ref('')
+const thinkerStatus = ref('')
+const thinkerResultDraft = ref(createEmptyThinkerDraft())
+const thinkerError = ref('')
+const thinkerInputSnapshot = ref({
+  files: [],
+  simulationRequirement: ''
+})
+
 // 计算属性:是否可以提交
 const canSubmit = computed(() => {
   if (activeTab.value === 'upload') {
-    return formData.value.simulationRequirement.trim() !== '' && files.value.length > 0
+    const hasUploadInputs =
+      formData.value.simulationRequirement.trim() !== '' && files.value.length > 0
+    if (!hasUploadInputs) {
+      return false
+    }
+    return !(thinkerEnabled.value && thinkerJobId.value)
   }
   // Polymarket tab: 需要选中事件且有提示词
   return selectedEvent.value && formData.value.simulationRequirement.trim() !== ''
 })
 
+const uploadInputsDisabled = computed(() => (
+  activeTab.value === 'upload' &&
+  (loading.value || (thinkerEnabled.value && thinkerJobId.value !== ''))
+))
+
+const thinkerExpandedTopicsText = computed({
+  get: () => thinkerResultDraft.value.expandedTopics.join('\n'),
+  set: value => {
+    thinkerResultDraft.value = {
+      ...thinkerResultDraft.value,
+      expandedTopics: value
+        .split(/\r?\n|,/)
+        .map(topic => topic.trim())
+        .filter(Boolean)
+    }
+  }
+})
+
+const startButtonLabel = computed(() => {
+  if (loading.value) {
+    return activeTab.value === 'upload' && thinkerEnabled.value
+      ? 'Thinker 处理中...'
+      : '初始化中...'
+  }
+
+  if (activeTab.value === 'upload' && thinkerEnabled.value && thinkerJobId.value) {
+    if (thinkerStatus.value === 'succeeded') {
+      return '等待采用 Thinker 结果'
+    }
+    if (thinkerStatus.value === 'failed') {
+      return '请重试或跳过 Thinker'
+    }
+  }
+
+  return '启动引擎'
+})
+
 // 触发文件选择
 const triggerFileInput = () => {
-  if (!loading.value) {
+  if (!uploadInputsDisabled.value) {
     fileInput.value?.click()
   }
 }
@@ -358,7 +548,7 @@ const handleFileSelect = (event) => {
 
 // 处理拖拽相关
 const handleDragOver = (e) => {
-  if (!loading.value) {
+  if (!uploadInputsDisabled.value) {
     isDragOver.value = true
   }
 }
@@ -369,13 +559,14 @@ const handleDragLeave = (e) => {
 
 const handleDrop = (e) => {
   isDragOver.value = false
-  if (loading.value) return
+  if (uploadInputsDisabled.value) return
   const droppedFiles = Array.from(e.dataTransfer.files)
   addFiles(droppedFiles)
 }
 
 // 添加文件
 const addFiles = (newFiles) => {
+  if (uploadInputsDisabled.value) return
   const validFiles = newFiles.filter(file => {
     const ext = file.name.split('.').pop().toLowerCase()
     return ['pdf', 'md', 'txt'].includes(ext)
@@ -385,6 +576,7 @@ const addFiles = (newFiles) => {
 
 // 移除文件
 const removeFile = (index) => {
+  if (uploadInputsDisabled.value) return
   files.value.splice(index, 1)
 }
 
@@ -470,6 +662,207 @@ const truncate = (s, n) => {
   return s.length > n ? s.slice(0, n) + '...' : s
 }
 
+const formatThinkerStatus = (status) => {
+  const statusText = {
+    '': '待启动',
+    created: '已创建',
+    running: '分析中',
+    succeeded: '可采用',
+    failed: '失败',
+    skipped: '已跳过',
+    materialized: '已采用'
+  }
+
+  return statusText[status] || status || '待启动'
+}
+
+const getThinkerErrorMessage = (err, fallback) => {
+  const detail = err?.response?.data?.detail
+  if (typeof detail === 'string' && detail.trim()) {
+    return detail
+  }
+
+  if (typeof err?.message === 'string' && err.message.trim()) {
+    return err.message
+  }
+
+  return fallback
+}
+
+const getCurrentUploadSnapshot = () => ({
+  files: [...files.value],
+  simulationRequirement: formData.value.simulationRequirement
+})
+
+const getThinkerSnapshot = () => {
+  if (thinkerInputSnapshot.value.files.length > 0) {
+    return {
+      files: [...thinkerInputSnapshot.value.files],
+      simulationRequirement: thinkerInputSnapshot.value.simulationRequirement
+    }
+  }
+
+  return getCurrentUploadSnapshot()
+}
+
+const resetUploadThinkerState = () => {
+  thinkerJobId.value = ''
+  thinkerStatus.value = ''
+  thinkerResultDraft.value = createEmptyThinkerDraft()
+  thinkerError.value = ''
+  thinkerInputSnapshot.value = {
+    files: [],
+    simulationRequirement: ''
+  }
+}
+
+const handleThinkerToggleChange = () => {
+  if (!thinkerEnabled.value) {
+    resetUploadThinkerState()
+  }
+}
+
+const finalizeUploadThinkerJob = (job) => {
+  thinkerStatus.value = job?.status || ''
+
+  if (job?.status === 'succeeded') {
+    thinkerResultDraft.value = hydrateThinkerDraft(job?.result)
+    thinkerError.value = ''
+    return
+  }
+
+  thinkerResultDraft.value = createEmptyThinkerDraft()
+
+  if (job?.status === 'failed') {
+    thinkerError.value = job?.error_message || 'Thinker 分析失败'
+    return
+  }
+
+  thinkerError.value = ''
+}
+
+const pollUploadThinkerJob = async (jobId) => {
+  const terminalJob = await pollThinkerJobUntilTerminal(jobId, getThinkerJob, {
+    onUpdate: job => {
+      thinkerStatus.value = job?.status || thinkerStatus.value
+    }
+  })
+
+  finalizeUploadThinkerJob(terminalJob)
+  return terminalJob
+}
+
+const pushPendingUploadToProcess = (filesOrPayload, requirement = '') => {
+  setPendingUpload(filesOrPayload, requirement)
+  router.push({ name: 'Process', params: { projectId: 'new' } })
+}
+
+const startUploadThinkerFlow = async () => {
+  thinkerError.value = ''
+  thinkerResultDraft.value = createEmptyThinkerDraft()
+  thinkerInputSnapshot.value = getCurrentUploadSnapshot()
+
+  const payload = new FormData()
+  payload.append('mode', 'upload')
+  payload.append('research_direction', thinkerInputSnapshot.value.simulationRequirement)
+  thinkerInputSnapshot.value.files.forEach(file => {
+    payload.append('files', file)
+  })
+
+  loading.value = true
+
+  try {
+    const job = await createThinkerJob(payload)
+    thinkerJobId.value = job?.job_id || ''
+    if (!thinkerJobId.value) {
+      throw new Error('Thinker job 创建失败: 缺少 job_id')
+    }
+    thinkerStatus.value = job?.status || 'created'
+    await pollUploadThinkerJob(thinkerJobId.value)
+  } catch (err) {
+    thinkerStatus.value = 'failed'
+    thinkerError.value = getThinkerErrorMessage(err, 'Thinker 任务创建失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+const adoptUploadThinkerResult = async () => {
+  if (!thinkerJobId.value) return
+
+  loading.value = true
+  thinkerError.value = ''
+
+  try {
+    const response = await materializeThinkerJob({
+      job_id: thinkerJobId.value,
+      adopted: {
+        expanded_topics: [...thinkerResultDraft.value.expandedTopics],
+        enriched_seed_text: thinkerResultDraft.value.enrichedSeedText,
+        suggested_simulation_prompt: thinkerResultDraft.value.suggestedSimulationPrompt
+      }
+    })
+
+    thinkerStatus.value = response?.status || 'materialized'
+
+    const materialized = normalizeThinkerMaterialized(response?.payload)
+    const syntheticSeedFile = buildThinkerSeedFile(materialized)
+    const snapshot = getThinkerSnapshot()
+    const pendingPayload = createPendingUploadPayload({
+      files: [...snapshot.files, syntheticSeedFile],
+      simulationRequirement: snapshot.simulationRequirement,
+      finalTopics: materialized.finalTopics,
+      finalSeedText: materialized.finalSeedText,
+      finalSimulationRequirement: materialized.finalSimulationRequirement
+    })
+
+    pushPendingUploadToProcess(pendingPayload)
+  } catch (err) {
+    thinkerError.value = getThinkerErrorMessage(err, 'Thinker 结果采用失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+const retryUploadThinkerFlow = async () => {
+  if (!thinkerJobId.value) return
+
+  loading.value = true
+  thinkerError.value = ''
+  thinkerResultDraft.value = createEmptyThinkerDraft()
+
+  try {
+    const job = await retryThinkerJob(thinkerJobId.value)
+    thinkerJobId.value = job?.job_id || thinkerJobId.value
+    thinkerStatus.value = job?.status || 'created'
+    await pollUploadThinkerJob(job?.job_id || thinkerJobId.value)
+  } catch (err) {
+    thinkerStatus.value = 'failed'
+    thinkerError.value = getThinkerErrorMessage(err, 'Thinker 重试失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+const skipUploadThinkerFlow = async () => {
+  loading.value = true
+  thinkerError.value = ''
+
+  try {
+    if (thinkerJobId.value) {
+      const job = await skipThinkerJob(thinkerJobId.value)
+      thinkerStatus.value = job?.status || 'skipped'
+    }
+
+    const snapshot = getThinkerSnapshot()
+    pushPendingUploadToProcess(snapshot.files, snapshot.simulationRequirement)
+  } catch (err) {
+    thinkerError.value = getThinkerErrorMessage(err, '跳过 Thinker 失败')
+  } finally {
+    loading.value = false
+  }
+}
+
 // 生成 Polymarket 事件文档 Blob
 const buildPolymarketDoc = (ev) => {
   let doc = `Polymarket Event: ${ev.title}\n\n`
@@ -489,17 +882,20 @@ const buildPolymarketDoc = (ev) => {
 }
 
 // 开始模拟
-const startSimulation = () => {
+const startSimulation = async () => {
   if (!canSubmit.value || loading.value) return
 
-  import('../store/pendingUpload.js').then(({ setPendingUpload }) => {
-    let uploadFiles = files.value
-    if (activeTab.value === 'polymarket' && selectedEvent.value) {
-      uploadFiles = [buildPolymarketDoc(selectedEvent.value)]
-    }
-    setPendingUpload(uploadFiles, formData.value.simulationRequirement)
-    router.push({ name: 'Process', params: { projectId: 'new' } })
-  })
+  if (activeTab.value === 'upload' && thinkerEnabled.value) {
+    await startUploadThinkerFlow()
+    return
+  }
+
+  let uploadFiles = files.value
+  if (activeTab.value === 'polymarket' && selectedEvent.value) {
+    uploadFiles = [buildPolymarketDoc(selectedEvent.value)]
+  }
+
+  pushPendingUploadToProcess(uploadFiles, formData.value.simulationRequirement)
 }
 </script>
 
@@ -756,6 +1152,7 @@ const startSimulation = () => {
 }
 .file-name { flex: 1; margin: 0 10px; }
 .remove-btn { background: none; border: none; cursor: pointer; font-size: 1.2rem; color: #999; }
+.remove-btn:disabled { cursor: not-allowed; opacity: 0.4; }
 
 .console-divider { display: flex; align-items: center; margin: 10px 0; }
 .console-divider::before, .console-divider::after { content: ''; flex: 1; height: 1px; background: #EEE; }
@@ -770,9 +1167,81 @@ const startSimulation = () => {
   font-family: var(--font-mono); font-size: 0.9rem; line-height: 1.6;
   resize: vertical; outline: none; min-height: 150px;
 }
+.code-input:disabled { color: #999; cursor: not-allowed; }
 .model-badge {
   position: absolute; bottom: 10px; right: 15px;
   font-family: var(--font-mono); font-size: 0.7rem; color: #AAA;
+}
+
+.thinker-section { padding-top: 0; }
+.thinker-toggle {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 16px; border: 1px solid #EEE; background: #FAFAFA;
+  cursor: pointer;
+}
+.thinker-toggle input { margin-top: 4px; accent-color: var(--orange); }
+.thinker-toggle-text {
+  display: flex; flex-direction: column; gap: 4px;
+  font-size: 0.85rem; color: #666; line-height: 1.5;
+}
+.thinker-toggle-text strong { color: var(--black); font-family: var(--font-mono); }
+.thinker-panel {
+  margin-top: 14px; border: 1px solid #EEE; background: var(--white);
+  padding: 18px; display: flex; flex-direction: column; gap: 14px;
+}
+.thinker-status-row {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 12px;
+}
+.thinker-status-label {
+  font-family: var(--font-mono); font-size: 0.75rem;
+  color: #999; letter-spacing: 1px;
+}
+.thinker-status-badge {
+  padding: 4px 10px; border: 1px solid #DDD; font-family: var(--font-mono);
+  font-size: 0.72rem; letter-spacing: 0.5px; background: #FAFAFA; color: #666;
+}
+.thinker-status-badge.status-idle,
+.thinker-status-badge.status-created { border-color: #DDD; color: #777; }
+.thinker-status-badge.status-running { border-color: #999; color: #444; }
+.thinker-status-badge.status-succeeded,
+.thinker-status-badge.status-materialized {
+  border-color: var(--orange); color: var(--orange); background: #FFF5F0;
+}
+.thinker-status-badge.status-failed { border-color: #D14343; color: #D14343; background: #FFF4F4; }
+.thinker-status-badge.status-skipped { border-color: #BBB; color: #666; background: #F4F4F4; }
+.thinker-help {
+  margin: 0; font-size: 0.85rem; color: #666; line-height: 1.6;
+}
+.thinker-error {
+  border: 1px solid #F0B7B7; background: #FFF4F4; color: #A33A3A;
+  padding: 12px 14px; font-size: 0.82rem; line-height: 1.5;
+}
+.thinker-draft { display: flex; flex-direction: column; gap: 14px; }
+.thinker-field { display: flex; flex-direction: column; gap: 8px; }
+.thinker-field label {
+  font-family: var(--font-mono); font-size: 0.75rem; color: #666; letter-spacing: 0.5px;
+}
+.thinker-input {
+  width: 100%; border: 1px solid #DDD; background: #FAFAFA; padding: 14px 16px;
+  font-family: var(--font-mono); font-size: 0.85rem; line-height: 1.6;
+  resize: vertical; outline: none; min-height: 88px;
+}
+.thinker-input:focus { border-color: var(--orange); }
+.thinker-input:disabled { color: #999; cursor: not-allowed; }
+.thinker-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.thinker-primary-btn,
+.thinker-secondary-btn {
+  border: 1px solid var(--black); padding: 10px 16px; font-family: var(--font-mono);
+  font-size: 0.8rem; font-weight: 600; cursor: pointer; transition: all 0.2s;
+}
+.thinker-primary-btn { background: var(--black); color: var(--white); }
+.thinker-primary-btn:hover:not(:disabled) { background: var(--orange); border-color: var(--orange); }
+.thinker-secondary-btn { background: transparent; color: var(--black); }
+.thinker-secondary-btn:hover:not(:disabled) { border-color: var(--orange); color: var(--orange); }
+.thinker-primary-btn:disabled,
+.thinker-secondary-btn:disabled {
+  cursor: not-allowed; opacity: 0.5;
 }
 
 /* Polymarket 样式 */
