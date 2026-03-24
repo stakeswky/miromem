@@ -5,7 +5,8 @@ from __future__ import annotations
 from graphiti_core.cross_encoder.openai_reranker_client import OpenAIRerankerClient
 from graphiti_core.driver.falkordb_driver import FalkorDriver
 from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
-from graphiti_core.llm_client import LLMConfig, OpenAIClient
+from graphiti_core.llm_client import LLMConfig
+from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
 
 from miromem.graph_service.core.config import GraphServiceSettings
 
@@ -27,14 +28,14 @@ def build_graph_driver(settings: GraphServiceSettings) -> FalkorDriver:
     )
 
 
-def build_llm_client(settings: GraphServiceSettings) -> OpenAIClient:
+def build_llm_client(settings: GraphServiceSettings) -> OpenAIGenericClient:
     """Build the OpenAI-compatible LLM client used by Graphiti extraction."""
     config = LLMConfig(
         api_key=settings.graph_llm_api_key or "",
         base_url=_clean_base_url(settings.graph_llm_base_url),
         model=settings.graph_llm_model,
     )
-    return OpenAIClient(config=config)
+    return OpenAIGenericClient(config=config)
 
 
 def build_embedder(settings: GraphServiceSettings) -> OpenAIEmbedder:

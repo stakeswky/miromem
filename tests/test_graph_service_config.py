@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import graphiti_core.driver.falkordb_driver as falkordb_driver_module
+from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
 
+import miromem.graph_service.core.graphiti_factory as graphiti_factory_module
 from miromem.graph_service.core.config import GraphServiceSettings
-from miromem.graph_service.core.graphiti_factory import build_graphiti
 from miromem.graph_service.core.providers import (
     build_embedder,
     build_graph_driver,
     build_llm_client,
+    build_reranker,
 )
 
 
@@ -72,6 +74,7 @@ def test_build_llm_client_uses_openai_compatible_settings():
 
     llm_client = build_llm_client(settings)
 
+    assert isinstance(llm_client, OpenAIGenericClient)
     assert llm_client.config.api_key == "key"
     assert llm_client.config.base_url == "https://llm.example.com/v1"
     assert llm_client.config.model == "Qwen/Qwen2.5-72B-Instruct"
@@ -93,16 +96,34 @@ def test_build_embedder_uses_openai_compatible_settings():
     assert embedder.config.embedding_dim == 1024
 
 
-def test_build_graphiti_keeps_reranker_optional(monkeypatch):
-    _stub_falkordb(monkeypatch)
+def test_build_reranker_returns_none_when_unconfigured():
     settings = GraphServiceSettings(
-        falkordb_database="mirofish_graphs",
-        graph_llm_api_key="",
-        graph_embedding_api_key="",
         graph_reranker_model="",
     )
 
-    graphiti = build_graphiti(settings)
+    assert build_reranker(settings) is None
 
-    assert graphiti.driver.provider.value == "falkordb"
-    assert type(graphiti.cross_encoder).__name__ == "DisabledReranker"
+
+def test_build_graphiti_passes_through_optional_reranker(monkeypatch):
+    captured: dict[str, object] = {}
+    driver = object()
+    llm_client = object()
+    embedder = object()
+
+    class FakeGraphiti:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(graphiti_factory_module, "Graphiti", FakeGraphiti)
+    monkeypatch.setattr(graphiti_factory_module, "build_graph_driver", lambda settings: driver)
+    monkeypatch.setattr(graphiti_factory_module, "build_llm_client", lambda settings: llm_client)
+    monkeypatch.setattr(graphiti_factory_module, "build_embedder", lambda settings: embedder)
+    monkeypatch.setattr(graphiti_factory_module, "build_reranker", lambda settings: None)
+
+    graphiti = graphiti_factory_module.build_graphiti(GraphServiceSettings())
+
+    assert isinstance(graphiti, FakeGraphiti)
+    assert captured["graph_driver"] is driver
+    assert captured["llm_client"] is llm_client
+    assert captured["embedder"] is embedder
+    assert captured["cross_encoder"] is None
