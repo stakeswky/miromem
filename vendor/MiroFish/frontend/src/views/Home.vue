@@ -514,6 +514,7 @@ const thinkerStatus = ref('')
 const thinkerResultDraft = ref(createEmptyThinkerDraft())
 const thinkerError = ref('')
 const thinkerAvailableActions = ref([])
+const thinkerUnrecoverableTransportError = ref(false)
 const thinkerInputSnapshot = ref(createEmptyThinkerSnapshot())
 
 const thinkerHasJobOnAnotherTab = computed(() => (
@@ -528,7 +529,8 @@ const thinkerPolymarketSessionLocked = computed(() => (
     thinkerJobId: thinkerJobId.value,
     thinkerJobMode: thinkerJobMode.value,
     selectedEventId: selectedEvent.value?.id,
-    snapshotEventId: thinkerInputSnapshot.value.polymarketEvent?.id
+    snapshotEventId: thinkerInputSnapshot.value.polymarketEvent?.id,
+    unrecoverableTransportError: thinkerUnrecoverableTransportError.value
   })
 ))
 
@@ -834,6 +836,7 @@ const resetThinkerState = () => {
   thinkerResultDraft.value = createEmptyThinkerDraft()
   thinkerError.value = ''
   thinkerAvailableActions.value = []
+  thinkerUnrecoverableTransportError.value = false
   thinkerInputSnapshot.value = createEmptyThinkerSnapshot()
 }
 
@@ -855,6 +858,7 @@ const handleThinkerToggleChange = () => {
 const applyThinkerJobState = (job, options = {}) => {
   const state = normalizeThinkerJobState(job)
 
+  thinkerUnrecoverableTransportError.value = false
   thinkerStatus.value = state.status
   thinkerAvailableActions.value = state.availableActions
 
@@ -905,8 +909,9 @@ const pollThinkerJob = async (jobId) => {
       return recoveredState.job
     }
 
+    thinkerUnrecoverableTransportError.value = true
     thinkerAvailableActions.value = []
-    thinkerError.value = recoveredState.errorMessage
+    thinkerError.value = `${recoveredState.errorMessage}。可关闭 Thinker 后重试。`
     return null
   }
 }
@@ -920,6 +925,7 @@ const startThinkerFlow = async () => {
   thinkerError.value = ''
   thinkerResultDraft.value = createEmptyThinkerDraft()
   thinkerAvailableActions.value = []
+  thinkerUnrecoverableTransportError.value = false
   thinkerInputSnapshot.value = getCurrentThinkerSnapshot()
   thinkerJobMode.value = thinkerInputSnapshot.value.mode
 

@@ -266,13 +266,15 @@ export function shouldPreservePolymarketThinkerSession(options = {}) {
   const snapshotEventId = toStringValue(
     options.snapshotEventId ?? options.polymarketEventId
   ).trim()
+  const unrecoverableTransportError = Boolean(options.unrecoverableTransportError)
 
   return (
     thinkerJobId !== '' &&
     thinkerJobMode === 'polymarket' &&
     selectedEventId !== '' &&
     snapshotEventId !== '' &&
-    selectedEventId === snapshotEventId
+    selectedEventId === snapshotEventId &&
+    !unrecoverableTransportError
   )
 }
 

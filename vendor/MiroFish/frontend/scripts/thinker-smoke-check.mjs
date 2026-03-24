@@ -140,6 +140,18 @@ async function testShouldPreservePolymarketThinkerSession() {
     false,
     'upload Thinker sessions should not lock the Polymarket fallback path'
   )
+
+  assert.equal(
+    shouldPreservePolymarketThinkerSession({
+      thinkerJobId: 'job-1',
+      thinkerJobMode: 'polymarket',
+      selectedEventId: 'event-1',
+      snapshotEventId: 'event-1',
+      unrecoverableTransportError: true
+    }),
+    false,
+    'an unrecoverable polling transport failure must allow the user to escape the locked Polymarket session'
+  )
 }
 
 async function testNormalizeThinkerAvailableActions() {
