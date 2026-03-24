@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from miromem.thinker.jobs import InMemoryThinkerJobStore
-from miromem.thinker.models import ThinkerJobStatus
+from miromem.thinker.models import ThinkerJobStatus, ThinkerResult
+from miromem.thinker.orchestrator import ThinkerOrchestrator
 
 router = APIRouter(prefix="/api/v1/thinker", tags=["thinker"])
 
 _job_store: InMemoryThinkerJobStore | None = None
+_orchestrator: ThinkerOrchestrator | None = None
 
 ThinkerMode = Literal["topic_only", "upload", "polymarket"]
 
@@ -22,6 +25,13 @@ def _get_job_store() -> InMemoryThinkerJobStore:
     if _job_store is None:
         _job_store = InMemoryThinkerJobStore()
     return _job_store
+
+
+def _get_orchestrator() -> ThinkerOrchestrator:
+    global _orchestrator
+    if _orchestrator is None:
+        _orchestrator = ThinkerOrchestrator()
+    return _orchestrator
 
 
 class ThinkerJobCreateRequest(BaseModel):
@@ -39,8 +49,11 @@ class ThinkerJobStatusResponse(BaseModel):
     mode: str
     research_direction: str
     status: ThinkerJobStatus
+    result: ThinkerResult | None = None
     error_code: str | None = None
     error_message: str | None = None
+    retryable: bool | None = None
+    can_continue_without_thinker: bool = True
 
 
 class ThinkerAdoptedInput(BaseModel):
@@ -72,6 +85,13 @@ async def create_job(body: ThinkerJobCreateRequest) -> ThinkerJobCreateResponse:
         mode=body.mode,
         research_direction=body.research_direction,
     )
+    asyncio.create_task(
+        _execute_job(
+            job.job_id,
+            mode=body.mode,
+            research_direction=body.research_direction,
+        )
+    )
     return ThinkerJobCreateResponse(job_id=job.job_id, status=job.status)
 
 
@@ -87,8 +107,11 @@ async def get_job(job_id: str) -> ThinkerJobStatusResponse:
         mode=job.mode,
         research_direction=job.research_direction,
         status=job.status,
+        result=job.result,
         error_code=job.error_code,
         error_message=job.error_message,
+        retryable=job.retryable,
+        can_continue_without_thinker=job.can_continue_without_thinker,
     )
 
 
@@ -113,3 +136,41 @@ async def materialize_job(body: ThinkerMaterializeRequest) -> ThinkerMaterialize
             final_simulation_requirement=body.adopted.suggested_simulation_prompt,
         ),
     )
+
+
+async def _execute_job(
+    job_id: str,
+    *,
+    mode: ThinkerMode,
+    research_direction: str,
+) -> None:
+    store = _get_job_store()
+    try:
+        store.mark_running(job_id)
+        result = await _get_orchestrator().run(
+            mode=mode,
+            research_direction=research_direction,
+        )
+    except Exception as exc:
+        error_code, retryable = _classify_job_error(exc)
+        store.mark_failed(
+            job_id,
+            error_code=error_code,
+            error_message=str(exc) or exc.__class__.__name__,
+            retryable=retryable,
+            can_continue_without_thinker=True,
+        )
+        return
+
+    store.mark_succeeded(job_id, result=result)
+
+
+def _classify_job_error(exc: Exception) -> tuple[str, bool]:
+    message = str(exc).lower()
+    if isinstance(exc, ValueError) and message.startswith("unsupported mode:"):
+        return "unsupported_mode", False
+    if isinstance(exc, RuntimeError) and "not configured" in message:
+        return "provider_misconfigured", False
+    if exc.__class__.__module__.startswith(("httpx", "openai")):
+        return "provider_unavailable", True
+    return "thinker_execution_failed", True
