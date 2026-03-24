@@ -17,6 +17,7 @@ ThinkerJobStatus = Literal[
     "materialized",
     "skipped",
 ]
+ThinkerJobAction = Literal["retry", "skip"]
 ThinkerMode = Literal["topic_only", "upload", "polymarket"]
 
 
@@ -26,6 +27,12 @@ def _utcnow() -> datetime:
 
 def _job_id() -> str:
     return str(uuid4())
+
+
+def thinker_available_actions(status: ThinkerJobStatus) -> list[ThinkerJobAction]:
+    if status == "failed":
+        return ["retry", "skip"]
+    return []
 
 
 class ThinkerUploadedFile(BaseModel):
@@ -64,6 +71,22 @@ class ThinkerResult(BaseModel):
     meta: dict[str, Any] = Field(default_factory=dict)
 
 
+class ThinkerAdoptedInput(BaseModel):
+    """User-edited overrides adopted from a Thinker result."""
+
+    expanded_topics: list[str] | None = None
+    enriched_seed_text: str | None = None
+    suggested_simulation_prompt: str | None = None
+
+
+class ThinkerMaterializedPayload(BaseModel):
+    """Final payload consumed by the downstream simulation flow."""
+
+    final_topics: list[str] = Field(default_factory=list)
+    final_seed_text: str = ""
+    final_simulation_requirement: str = ""
+
+
 class ThinkerJob(BaseModel):
     """State tracked for a single Thinker orchestration job."""
 
@@ -72,6 +95,9 @@ class ThinkerJob(BaseModel):
     job_id: str = Field(default_factory=_job_id)
     mode: str
     research_direction: str
+    seed_text: str = ""
+    uploaded_files: list[ThinkerUploadedFile] = Field(default_factory=list)
+    polymarket_event: dict[str, Any] | None = None
     status: ThinkerJobStatus = "created"
     result: ThinkerResult | None = None
     error_code: str | None = None

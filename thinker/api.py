@@ -12,11 +12,17 @@ from pydantic import BaseModel, Field, ValidationError
 
 from miromem.thinker.file_ingest import extract_uploads
 from miromem.thinker.jobs import InMemoryThinkerJobStore
+from miromem.thinker.materializer import ThinkerMaterializer
 from miromem.thinker.models import (
+    ThinkerAdoptedInput,
+    ThinkerJob,
+    ThinkerJobAction,
     ThinkerJobStatus,
     ThinkerMode,
+    ThinkerMaterializedPayload,
     ThinkerResult,
     ThinkerUploadedFile,
+    thinker_available_actions,
 )
 from miromem.thinker.orchestrator import ThinkerOrchestrator
 
@@ -24,6 +30,7 @@ router = APIRouter(prefix="/api/v1/thinker", tags=["thinker"])
 
 _job_store: InMemoryThinkerJobStore | None = None
 _orchestrator: ThinkerOrchestrator | None = None
+_materializer: ThinkerMaterializer | None = None
 
 
 def _get_job_store() -> InMemoryThinkerJobStore:
@@ -38,6 +45,13 @@ def _get_orchestrator() -> ThinkerOrchestrator:
     if _orchestrator is None:
         _orchestrator = ThinkerOrchestrator()
     return _orchestrator
+
+
+def _get_materializer() -> ThinkerMaterializer:
+    global _materializer
+    if _materializer is None:
+        _materializer = ThinkerMaterializer()
+    return _materializer
 
 
 class ThinkerJobCreateRequest(BaseModel):
@@ -62,24 +76,13 @@ class ThinkerJobStatusResponse(BaseModel):
     error_code: str | None = None
     error_message: str | None = None
     retryable: bool | None = None
+    available_actions: list[ThinkerJobAction] = Field(default_factory=list)
     can_continue_without_thinker: bool = True
-
-
-class ThinkerAdoptedInput(BaseModel):
-    expanded_topics: list[str] = Field(default_factory=list)
-    enriched_seed_text: str = ""
-    suggested_simulation_prompt: str = ""
 
 
 class ThinkerMaterializeRequest(BaseModel):
     job_id: str
     adopted: ThinkerAdoptedInput = Field(default_factory=ThinkerAdoptedInput)
-
-
-class ThinkerMaterializedPayload(BaseModel):
-    final_topics: list[str] = Field(default_factory=list)
-    final_seed_text: str = ""
-    final_simulation_requirement: str = ""
 
 
 class ThinkerMaterializeResponse(BaseModel):
@@ -94,6 +97,9 @@ async def create_job(request: Request) -> ThinkerJobCreateResponse:
     job = _get_job_store().create_job(
         mode=body.mode,
         research_direction=body.research_direction,
+        seed_text=body.seed_text,
+        uploaded_files=body.uploaded_files,
+        polymarket_event=body.polymarket_event,
     )
     asyncio.create_task(
         _execute_job(
@@ -115,17 +121,7 @@ async def get_job(job_id: str) -> ThinkerJobStatusResponse:
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Thinker job not found") from exc
 
-    return ThinkerJobStatusResponse(
-        job_id=job.job_id,
-        mode=job.mode,
-        research_direction=job.research_direction,
-        status=job.status,
-        result=job.result,
-        error_code=job.error_code,
-        error_message=job.error_message,
-        retryable=job.retryable,
-        can_continue_without_thinker=job.can_continue_without_thinker,
-    )
+    return _build_job_status_response(job)
 
 
 @router.post("/materialize", response_model=ThinkerMaterializeResponse)
@@ -143,12 +139,46 @@ async def materialize_job(body: ThinkerMaterializeRequest) -> ThinkerMaterialize
     return ThinkerMaterializeResponse(
         job_id=job.job_id,
         status=job.status,
-        payload=ThinkerMaterializedPayload(
-            final_topics=body.adopted.expanded_topics,
-            final_seed_text=body.adopted.enriched_seed_text,
-            final_simulation_requirement=body.adopted.suggested_simulation_prompt,
+        payload=_get_materializer().materialize(
+            result=job.result,
+            adopted=body.adopted,
         ),
     )
+
+
+@router.post("/jobs/{job_id}/retry", response_model=ThinkerJobStatusResponse)
+async def retry_job(job_id: str) -> ThinkerJobStatusResponse:
+    store = _get_job_store()
+    try:
+        job = store.retry_job(job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Thinker job not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="Thinker job cannot be retried") from exc
+
+    asyncio.create_task(
+        _execute_job(
+            job.job_id,
+            mode=job.mode,
+            research_direction=job.research_direction,
+            seed_text=job.seed_text,
+            uploaded_files=job.uploaded_files,
+            polymarket_event=job.polymarket_event,
+        )
+    )
+    return _build_job_status_response(job)
+
+
+@router.post("/jobs/{job_id}/skip", response_model=ThinkerJobStatusResponse)
+async def skip_job(job_id: str) -> ThinkerJobStatusResponse:
+    try:
+        job = _get_job_store().mark_skipped(job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Thinker job not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail="Thinker job cannot be skipped") from exc
+
+    return _build_job_status_response(job)
 
 
 async def _execute_job(
@@ -193,6 +223,21 @@ def _classify_job_error(exc: Exception) -> tuple[str, bool]:
     if exc.__class__.__module__.startswith(("httpx", "openai")):
         return "provider_unavailable", True
     return "thinker_execution_failed", True
+
+
+def _build_job_status_response(job: ThinkerJob) -> ThinkerJobStatusResponse:
+    return ThinkerJobStatusResponse(
+        job_id=job.job_id,
+        mode=job.mode,
+        research_direction=job.research_direction,
+        status=job.status,
+        result=job.result,
+        error_code=job.error_code,
+        error_message=job.error_message,
+        retryable=job.retryable,
+        available_actions=thinker_available_actions(job.status),
+        can_continue_without_thinker=job.can_continue_without_thinker,
+    )
 
 
 async def _parse_job_create_request(request: Request) -> ThinkerJobCreateRequest:

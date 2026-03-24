@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+from typing import Any
 from datetime import datetime, timezone
 
-from miromem.thinker.models import ThinkerJob, ThinkerJobStatus, ThinkerResult
+from miromem.thinker.models import (
+    ThinkerJob,
+    ThinkerJobStatus,
+    ThinkerResult,
+    ThinkerUploadedFile,
+)
+
+_UNSET = object()
 
 
 def _utcnow() -> datetime:
@@ -26,8 +34,22 @@ class InMemoryThinkerJobStore:
     def __init__(self) -> None:
         self._jobs: dict[str, ThinkerJob] = {}
 
-    def create_job(self, *, mode: str, research_direction: str) -> ThinkerJob:
-        job = ThinkerJob(mode=mode, research_direction=research_direction)
+    def create_job(
+        self,
+        *,
+        mode: str,
+        research_direction: str,
+        seed_text: str = "",
+        uploaded_files: list[ThinkerUploadedFile] | None = None,
+        polymarket_event: dict[str, Any] | None = None,
+    ) -> ThinkerJob:
+        job = ThinkerJob(
+            mode=mode,
+            research_direction=research_direction,
+            seed_text=seed_text,
+            uploaded_files=uploaded_files or [],
+            polymarket_event=polymarket_event,
+        )
         self._jobs[job.job_id] = job
         return self._copy_job(job)
 
@@ -117,7 +139,7 @@ class InMemoryThinkerJobStore:
         job_id: str,
         status: ThinkerJobStatus,
         *,
-        result: ThinkerResult | None = None,
+        result: ThinkerResult | None | object = _UNSET,
         error_code: str | None = None,
         error_message: str | None = None,
         retryable: bool | None = None,
@@ -128,7 +150,7 @@ class InMemoryThinkerJobStore:
             raise ValueError(f"Illegal Thinker job transition: {job.status} -> {status}")
 
         job.status = status
-        if result is not None:
+        if result is not _UNSET:
             job.result = result
         job.error_code = error_code
         job.error_message = error_message

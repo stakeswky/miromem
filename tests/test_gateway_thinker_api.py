@@ -43,6 +43,22 @@ def _create_succeeded_job() -> str:
     return job.job_id
 
 
+def _create_failed_job() -> str:
+    store = thinker_api._get_job_store()
+    job = store.create_job(
+        mode="topic_only",
+        research_direction="Fed outlook",
+        seed_text="seed",
+    )
+    store.mark_failed(
+        job.job_id,
+        error_code="provider_unavailable",
+        error_message="timeout",
+        retryable=True,
+    )
+    return job.job_id
+
+
 def _wait_for_job_status(client: TestClient, job_id: str, expected_status: str) -> dict:
     deadline = time.monotonic() + 1.0
     last_body: dict | None = None
@@ -251,6 +267,7 @@ def test_get_thinker_job_returns_created_status(monkeypatch):
         "error_code": None,
         "error_message": None,
         "retryable": None,
+        "available_actions": [],
         "can_continue_without_thinker": True,
     }
 
@@ -301,6 +318,7 @@ def test_failed_job_returns_structured_error_shape():
         "error_code": "provider_misconfigured",
         "error_message": "Thinker LLM provider is not configured: missing THINKER_LLM_API_KEY",
         "retryable": False,
+        "available_actions": ["retry", "skip"],
         "can_continue_without_thinker": True,
     }
 
@@ -337,7 +355,7 @@ def test_materialize_returns_409_for_non_succeeded_job():
     assert thinker_api._get_job_store().get_job(job.job_id).status == "created"
 
 
-def test_materialize_marks_job_materialized_and_echoes_adopted_fields():
+def test_materialize_allows_user_edits_and_falls_back_to_stored_result():
     client = _client()
     job_id = _create_succeeded_job()
 
@@ -346,9 +364,7 @@ def test_materialize_marks_job_materialized_and_echoes_adopted_fields():
         json={
             "job_id": job_id,
             "adopted": {
-                "expanded_topics": ["Fed", "inflation"],
                 "enriched_seed_text": "edited seed",
-                "suggested_simulation_prompt": "edited prompt",
             },
         },
     )
@@ -358,9 +374,54 @@ def test_materialize_marks_job_materialized_and_echoes_adopted_fields():
         "job_id": job_id,
         "status": "materialized",
         "payload": {
-            "final_topics": ["Fed", "inflation"],
+            "final_topics": ["Fed"],
             "final_seed_text": "edited seed",
-            "final_simulation_requirement": "edited prompt",
+            "final_simulation_requirement": "prompt",
         },
     }
     assert thinker_api._get_job_store().get_job(job_id).status == "materialized"
+
+
+def test_retry_recreates_failed_job_in_created_state(monkeypatch):
+    _disable_background_tasks(monkeypatch)
+    client = _client()
+    job_id = _create_failed_job()
+
+    response = client.post(f"/api/v1/thinker/jobs/{job_id}/retry")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "job_id": job_id,
+        "mode": "topic_only",
+        "research_direction": "Fed outlook",
+        "status": "created",
+        "result": None,
+        "error_code": None,
+        "error_message": None,
+        "retryable": None,
+        "available_actions": [],
+        "can_continue_without_thinker": True,
+    }
+    assert thinker_api._get_job_store().get_job(job_id).status == "created"
+
+
+def test_skip_marks_job_as_skipped():
+    client = _client()
+    job_id = _create_failed_job()
+
+    response = client.post(f"/api/v1/thinker/jobs/{job_id}/skip")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "job_id": job_id,
+        "mode": "topic_only",
+        "research_direction": "Fed outlook",
+        "status": "skipped",
+        "result": None,
+        "error_code": None,
+        "error_message": None,
+        "retryable": None,
+        "available_actions": [],
+        "can_continue_without_thinker": True,
+    }
+    assert thinker_api._get_job_store().get_job(job_id).status == "skipped"

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 from miromem.config.settings import load_config
 from miromem.thinker.jobs import InMemoryThinkerJobStore
-from miromem.thinker.models import ThinkerResult
+from miromem.thinker.models import ThinkerResult, ThinkerUploadedFile
 
 
 def test_job_store_creates_pending_job():
@@ -28,6 +30,31 @@ def test_failed_job_can_be_retried_but_succeeded_job_cannot():
     store.mark_succeeded(completed.job_id)
     with pytest.raises(ValueError):
         store.retry_job(completed.job_id)
+
+
+def test_retry_preserves_original_inputs_for_reexecution():
+    parameters = inspect.signature(InMemoryThinkerJobStore.create_job).parameters
+    assert "seed_text" in parameters
+    assert "uploaded_files" in parameters
+    assert "polymarket_event" in parameters
+
+    store = InMemoryThinkerJobStore()
+    uploaded_files = [ThinkerUploadedFile(name="fed.txt", text="Uploaded memo")]
+    job = store.create_job(
+        mode="upload",
+        research_direction="Fed outlook",
+        seed_text="Fallback seed",
+        uploaded_files=uploaded_files,
+        polymarket_event={"title": "Fed event"},
+    )
+
+    store.mark_failed(job.job_id, error_code="upstream_error", error_message="timeout")
+    retried = store.retry_job(job.job_id)
+
+    assert retried.status == "created"
+    assert retried.seed_text == "Fallback seed"
+    assert retried.uploaded_files == uploaded_files
+    assert retried.polymarket_event == {"title": "Fed event"}
 
 
 def test_retry_to_success_clears_failure_metadata():
@@ -87,7 +114,6 @@ def test_failed_job_can_be_skipped():
     skipped = store.mark_skipped(job.job_id)
 
     assert skipped.status == "skipped"
-
 
 def test_external_mutation_does_not_change_stored_job():
     store = InMemoryThinkerJobStore()
