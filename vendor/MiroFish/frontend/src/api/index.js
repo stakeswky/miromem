@@ -1,17 +1,36 @@
 import axios from 'axios'
 
+const gatewayBaseUrl = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000').replace(/\/$/, '')
+
 // 创建axios实例
 const service = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001',
-  timeout: 300000, // 5分钟超时（本体生成可能需要较长时间）
-  headers: {
-    'Content-Type': 'application/json'
-  }
+  baseURL: gatewayBaseUrl,
+  timeout: 300000 // 5分钟超时（本体生成可能需要较长时间）
 })
 
 // 请求拦截器
 service.interceptors.request.use(
   config => {
+    const isFormDataRequest =
+      typeof FormData !== 'undefined' && config.data instanceof FormData
+
+    if (config.headers && typeof config.headers.setContentType === 'function') {
+      if (isFormDataRequest) {
+        config.headers.setContentType(undefined)
+      } else if (config.data !== undefined && !config.headers.getContentType()) {
+        config.headers.setContentType('application/json')
+      }
+      return config
+    }
+
+    const headers = config.headers || {}
+    if (isFormDataRequest) {
+      delete headers['Content-Type']
+      delete headers['content-type']
+    } else if (config.data !== undefined && !headers['Content-Type'] && !headers['content-type']) {
+      headers['Content-Type'] = 'application/json'
+    }
+    config.headers = headers
     return config
   },
   error => {
