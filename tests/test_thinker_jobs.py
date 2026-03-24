@@ -32,3 +32,18 @@ def test_load_config_includes_thinker_settings(monkeypatch):
     monkeypatch.setenv("THINKER_LLM_BASE_URL", "https://api.example.com/v1")
     config = load_config()
     assert config.thinker.llm_base_url == "https://api.example.com/v1"
+
+
+def test_load_config_thinker_settings_do_not_fallback_to_global_llm(monkeypatch):
+    monkeypatch.setenv("LLM_API_KEY", "global-key")
+    monkeypatch.setenv("LLM_BASE_URL", "https://global.example.com/v1")
+    monkeypatch.setenv("LLM_MODEL", "gpt-global")
+    monkeypatch.delenv("THINKER_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("THINKER_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("THINKER_LLM_MODEL", raising=False)
+
+    config = load_config()
+
+    assert config.thinker.llm_api_key == ""
+    assert config.thinker.llm_base_url == ""
+    assert config.thinker.llm_model == ""

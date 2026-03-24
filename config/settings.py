@@ -44,14 +44,9 @@ class LLMConfig:
 class ThinkerConfig:
     """Thinker-specific LLM settings."""
 
-    llm_api_key: str = field(default_factory=lambda: os.getenv("THINKER_LLM_API_KEY", os.getenv("LLM_API_KEY", "")))
-    llm_base_url: str = field(
-        default_factory=lambda: os.getenv(
-            "THINKER_LLM_BASE_URL",
-            os.getenv("LLM_BASE_URL", "https://api.openai.com/v1"),
-        )
-    )
-    llm_model: str = field(default_factory=lambda: os.getenv("THINKER_LLM_MODEL", os.getenv("LLM_MODEL", "gpt-4o")))
+    llm_api_key: str = field(default_factory=lambda: os.getenv("THINKER_LLM_API_KEY", ""))
+    llm_base_url: str = field(default_factory=lambda: os.getenv("THINKER_LLM_BASE_URL", ""))
+    llm_model: str = field(default_factory=lambda: os.getenv("THINKER_LLM_MODEL", ""))
 
 
 @dataclass
