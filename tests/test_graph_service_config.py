@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import graphiti_core.driver.falkordb_driver as falkordb_driver_module
+from graphiti_core.cross_encoder.openai_reranker_client import OpenAIRerankerClient
 from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
 
 import miromem.graph_service.core.graphiti_factory as graphiti_factory_module
@@ -37,12 +38,14 @@ def test_graph_service_settings_load_graphiti_fields(monkeypatch):
     monkeypatch.setenv("GRAPH_BACKEND", "graphiti")
     monkeypatch.setenv("GRAPH_SERVICE_PORT", "8010")
     monkeypatch.setenv("FALKORDB_HOST", "falkor")
+    monkeypatch.setenv("GRAPH_RERANKER_PROVIDER", "custom")
 
     settings = GraphServiceSettings()
 
     assert settings.graph_backend == "graphiti"
     assert settings.graph_service_port == 8010
     assert settings.falkordb_host == "falkor"
+    assert settings.graph_reranker_provider == "custom"
 
 
 def test_build_graph_driver_uses_falkor(monkeypatch):
@@ -98,7 +101,33 @@ def test_build_embedder_uses_openai_compatible_settings():
 
 def test_build_reranker_returns_none_when_unconfigured():
     settings = GraphServiceSettings(
+        graph_reranker_provider="disabled",
         graph_reranker_model="",
+    )
+
+    assert build_reranker(settings) is None
+
+
+def test_build_reranker_uses_openai_compatible_provider():
+    settings = GraphServiceSettings(
+        graph_reranker_provider="openai_compat",
+        graph_reranker_api_key="key",
+        graph_reranker_base_url="https://rerank.example.com/v1",
+        graph_reranker_model="rerank-model",
+    )
+
+    reranker = build_reranker(settings)
+
+    assert isinstance(reranker, OpenAIRerankerClient)
+    assert reranker.config.api_key == "key"
+    assert reranker.config.base_url == "https://rerank.example.com/v1"
+    assert reranker.config.model == "rerank-model"
+
+
+def test_build_reranker_custom_provider_is_startup_safe():
+    settings = GraphServiceSettings(
+        graph_reranker_provider="custom",
+        graph_reranker_model="custom-reranker",
     )
 
     assert build_reranker(settings) is None

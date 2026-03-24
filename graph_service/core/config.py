@@ -31,6 +31,7 @@ class GraphServiceSettings(BaseSettings):
     graph_embedding_base_url: str = ""
     graph_embedding_model: str = "text-embedding-3-large"
     graph_embedding_dim: int = 3072
+    graph_reranker_provider: str = "disabled"
     graph_reranker_api_key: str = ""
     graph_reranker_base_url: str = ""
     graph_reranker_model: str = ""

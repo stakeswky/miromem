@@ -51,8 +51,12 @@ def build_embedder(settings: GraphServiceSettings) -> OpenAIEmbedder:
 
 def build_reranker(settings: GraphServiceSettings) -> OpenAIRerankerClient | None:
     """Build the optional OpenAI-compatible reranker for v1 search paths."""
+    provider_name = settings.graph_reranker_provider.strip().lower()
+    if provider_name in {"", "disabled", "custom"}:
+        return None
+
     model_name = settings.graph_reranker_model.strip()
-    if not model_name:
+    if provider_name != "openai_compat" or not model_name:
         return None
 
     config = LLMConfig(
