@@ -48,6 +48,9 @@ class GraphBackendClient:
     def build_graph(self, graph_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", f"/graphs/{graph_id}/build", payload=payload)
 
+    def get_job(self, job_id: str) -> dict[str, Any]:
+        return self._request("GET", f"/jobs/{job_id}")
+
     def get_snapshot(self, graph_id: str) -> dict[str, Any]:
         return self._request("GET", f"/graphs/{graph_id}/snapshot")
 

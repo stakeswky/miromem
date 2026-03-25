@@ -387,9 +387,35 @@ class GraphBuilderService:
     ):
         """等待所有 episode 或 graph-service 构建任务完成"""
         if self.backend == "graphiti":
-            if progress_callback:
-                progress_callback("graph-service 构建任务已排队", 1.0)
-            return
+            if not episode_uuids:
+                if progress_callback:
+                    progress_callback("graph-service 构建任务未返回 job_id", 1.0)
+                return
+
+            job_id = episode_uuids[0]
+            start_time = time.time()
+
+            while True:
+                if time.time() - start_time > timeout:
+                    raise TimeoutError(f"等待 graph-service 构建任务超时: {job_id}")
+
+                job_payload = self.client.get_job(job_id)
+                job_status = str(job_payload.get("status", "") or "")
+
+                if job_status == "completed":
+                    if progress_callback:
+                        progress_callback("graph-service 构建任务完成", 1.0)
+                    return
+
+                if job_status in {"failed", "degraded"}:
+                    raise RuntimeError(
+                        f"graph-service 构建任务未成功完成: status={job_status}, "
+                        f"job_id={job_id}, payload={job_payload}"
+                    )
+
+                if progress_callback:
+                    progress_callback(f"等待 graph-service 构建任务完成 ({job_status or 'queued'})...", 0.9)
+                time.sleep(2)
 
         if not episode_uuids:
             if progress_callback:

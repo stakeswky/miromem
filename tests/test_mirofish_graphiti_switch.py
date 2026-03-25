@@ -77,6 +77,7 @@ class _FakeGraphBackendClient:
     def __init__(self, base_url: str) -> None:
         self.base_url = base_url
         self.build_calls: list[tuple[str, dict[str, object]]] = []
+        self.job_calls: list[str] = []
         self.snapshot_calls: list[str] = []
         self.entity_calls: list[tuple[str, dict[str, object]]] = []
         self.detail_calls: list[tuple[str, str]] = []
@@ -88,10 +89,16 @@ class _FakeGraphBackendClient:
             "context": "facts and nodes",
         }
         self.append_error: Exception | None = None
+        self.job_statuses: list[str] = ["completed"]
 
     def build_graph(self, graph_id: str, payload: dict[str, object]) -> dict[str, object]:
         self.build_calls.append((graph_id, payload))
         return {"job_id": "job-123", "status": "queued"}
+
+    def get_job(self, job_id: str) -> dict[str, object]:
+        self.job_calls.append(job_id)
+        status = self.job_statuses.pop(0) if self.job_statuses else "completed"
+        return {"job_id": job_id, "status": status}
 
     def get_snapshot(self, graph_id: str) -> dict[str, object]:
         self.snapshot_calls.append(graph_id)
@@ -279,6 +286,52 @@ def test_graph_builder_uses_graph_service_when_feature_flag_enabled(monkeypatch)
     assert graph_data["graph_id"] == graph_id
     assert graph_data["node_count"] == 1
     assert graph_data["edge_count"] == 1
+
+
+def test_graph_builder_waits_for_graph_service_job_completion(monkeypatch):
+    monkeypatch.setenv("GRAPH_BACKEND", "graphiti")
+    monkeypatch.setenv("GRAPH_SERVICE_BASE_URL", "http://graph-service:8001")
+    monkeypatch.setenv("LLM_API_KEY", "llm-key")
+    monkeypatch.delenv("ZEP_API_KEY", raising=False)
+
+    config_module = _load_mirofish_module(
+        "vendor.MiroFish.backend.app.config",
+        "config.py",
+    )
+    _load_mirofish_module(
+        "vendor.MiroFish.backend.app.services.graph_backend_client",
+        "services/graph_backend_client.py",
+    )
+    graph_builder_module = _load_mirofish_module(
+        "vendor.MiroFish.backend.app.services.graph_builder",
+        "services/graph_builder.py",
+    )
+
+    fake_client = _FakeGraphBackendClient(config_module.Config.GRAPH_SERVICE_BASE_URL)
+    fake_client.job_statuses = ["running", "completed"]
+    monkeypatch.setattr(
+        graph_builder_module,
+        "GraphBackendClient",
+        lambda base_url: fake_client,
+    )
+    monkeypatch.setattr(graph_builder_module.time, "sleep", lambda seconds: None)
+
+    builder = graph_builder_module.GraphBuilderService()
+    graph_id = builder.create_graph("Demo Graph")
+    builder.set_ontology(
+        graph_id,
+        {"entity_types": [{"name": "Person", "attributes": []}], "edge_types": []},
+    )
+
+    job_ids = builder.add_text_batches(
+        graph_id,
+        ["Alice follows Bob."],
+        batch_size=1,
+    )
+    builder._wait_for_episodes(job_ids)
+
+    assert job_ids == ["job-123"]
+    assert fake_client.job_calls == ["job-123", "job-123"]
 
 
 def test_zep_entity_reader_uses_graph_service_when_feature_flag_enabled(monkeypatch):

@@ -87,6 +87,7 @@ def test_graph_backend_client_routes_all_supported_graph_requests():
     )
 
     assert client.build_graph("demo", {"graph_name": "Demo"})["path"] == "/graphs/demo/build"
+    assert client.get_job("job-123")["path"] == "/jobs/job-123"
     assert client.get_snapshot("demo")["path"] == "/graphs/demo/snapshot"
     assert client.get_entities("demo", {"entity_type": "Person"})["params"] == {"entity_type": "Person"}
     assert client.get_entity_detail("demo", "node-1")["path"] == "/graphs/demo/entities/node-1"
@@ -95,6 +96,7 @@ def test_graph_backend_client_routes_all_supported_graph_requests():
 
     assert captured_requests == [
         ("POST", "/graphs/demo/build", {}, {"graph_name": "Demo"}),
+        ("GET", "/jobs/job-123", {}, None),
         ("GET", "/graphs/demo/snapshot", {}, None),
         ("GET", "/graphs/demo/entities", {"entity_type": "Person"}, None),
         ("GET", "/graphs/demo/entities/node-1", {}, None),
