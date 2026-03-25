@@ -8,8 +8,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from miromem.config.settings import load_config
-from miromem.graph.api import router as graph_router
 from miromem.evolution.api import router as evolution_router
+from miromem.graph.api import router as graph_router
+from miromem.thinker.api import router as thinker_router
 
 config = load_config()
 app = FastAPI(title="MiroMem Gateway", version="0.1.0")
@@ -80,6 +81,15 @@ async def proxy_mirofish_report(request: Request, path: str):
     return await _proxy(request, config.mirofish.base_url, f"/api/report/{path}")
 
 
+# --- Proxy: MiroFish Polymarket API ---
+
+
+@app.api_route("/api/polymarket/{path:path}", methods=["GET"])
+async def proxy_mirofish_polymarket(request: Request, path: str):
+    """Proxy Polymarket requests to MiroFish backend."""
+    return await _proxy(request, config.mirofish.base_url, f"/api/polymarket/{path}")
+
+
 # --- MiroMem Native: Knowledge Graph Extension ---
 
 app.include_router(graph_router)
@@ -88,6 +98,11 @@ app.include_router(graph_router)
 # --- MiroMem Native: Cross-Simulation Evolution ---
 
 app.include_router(evolution_router)
+
+
+# --- MiroMem Native: Thinker Orchestration ---
+
+app.include_router(thinker_router)
 
 
 # --- Internal Proxy Helper ---

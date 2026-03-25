@@ -41,6 +41,19 @@ class LLMConfig:
 
 
 @dataclass
+class ThinkerConfig:
+    """Thinker-specific provider settings."""
+
+    llm_api_key: str = field(default_factory=lambda: os.getenv("THINKER_LLM_API_KEY", ""))
+    llm_base_url: str = field(default_factory=lambda: os.getenv("THINKER_LLM_BASE_URL", ""))
+    llm_model: str = field(default_factory=lambda: os.getenv("THINKER_LLM_MODEL", ""))
+    search_base_url: str = field(default_factory=lambda: os.getenv("THINKER_SEARCH_BASE_URL", ""))
+    search_api_key: str = field(default_factory=lambda: os.getenv("THINKER_SEARCH_API_KEY", ""))
+    scrape_base_url: str = field(default_factory=lambda: os.getenv("THINKER_SCRAPE_BASE_URL", ""))
+    scrape_api_key: str = field(default_factory=lambda: os.getenv("THINKER_SCRAPE_API_KEY", ""))
+
+
+@dataclass
 class InfraConfig:
     """Infrastructure connection settings."""
 
@@ -59,6 +72,7 @@ class MiroMemConfig:
     evermemos: EverMemOSConfig = field(default_factory=EverMemOSConfig)
     mirofish: MiroFishConfig = field(default_factory=MiroFishConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
+    thinker: ThinkerConfig = field(default_factory=ThinkerConfig)
     infra: InfraConfig = field(default_factory=InfraConfig)
     gateway_port: int = field(default_factory=lambda: int(os.getenv("GATEWAY_PORT", "8000")))
 

@@ -139,6 +139,15 @@ All endpoints are served through the Gateway at `http://localhost:8000`.
 | GET | `/api/v1/evolution/predictions` | Prediction accuracy history |
 | GET | `/api/v1/evolution/simulations` | List past simulations |
 
+### Thinker (native)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/v1/thinker/jobs` | Create a Thinker job for `topic_only`, `upload`, or `polymarket` research |
+| GET | `/api/v1/thinker/jobs/{job_id}` | Poll job status, result payload, error details, and `available_actions` |
+| POST | `/api/v1/thinker/materialize` | Merge a succeeded Thinker result with user-adopted overrides for simulation inputs |
+| POST | `/api/v1/thinker/jobs/{job_id}/retry` | Reset a failed job to `created` and rerun it |
+| POST | `/api/v1/thinker/jobs/{job_id}/skip` | Mark a failed or succeeded job as `skipped` so downstream work can continue |
+
 ### Simulation (proxied to MiroFish)
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -150,13 +159,21 @@ All endpoints are served through the Gateway at `http://localhost:8000`.
 
 ## Configuration / 配置
 
-Copy `.env.template` to `.env` and fill in your values. Key variables:
+Copy `.env.template` to `.env` and fill in your values. The frontend should target the Gateway host root, not the `/api` prefix, because request modules already call `/api/...` paths. Key variables:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `LLM_API_KEY` | OpenAI-compatible LLM API key | — |
 | `LLM_BASE_URL` | LLM provider base URL | `https://openrouter.ai/api/v1` |
 | `LLM_MODEL` | Model name | `x-ai/grok-4-fast` |
+| `THINKER_LLM_API_KEY` | Optional Thinker-specific LLM API key override | — |
+| `THINKER_LLM_BASE_URL` | Thinker LLM base URL | — |
+| `THINKER_LLM_MODEL` | Thinker model name | — |
+| `THINKER_SEARCH_BASE_URL` | Thinker search provider base URL | — |
+| `THINKER_SEARCH_API_KEY` | Thinker search provider API key | — |
+| `THINKER_SCRAPE_BASE_URL` | Thinker scrape provider base URL | — |
+| `THINKER_SCRAPE_API_KEY` | Thinker scrape provider API key | — |
+| `VITE_API_BASE_URL` | Frontend Gateway base URL, kept at the host root to avoid `/api/api/...` | `http://localhost:8000` |
 | `EMBEDDING_API_KEY` | Embedding model API key | — |
 | `EMBEDDING_MODEL` | Embedding model name | `Qwen/Qwen3-Embedding-4B` |
 | `GRAPH_BACKEND` | Graph backend switch for MiroFish rollout | `zep` |
@@ -171,6 +188,65 @@ Copy `.env.template` to `.env` and fill in your values. Key variables:
 See `.env.template` for the complete list.
 
 完整变量列表请参考 `.env.template`。
+
+## Thinker Workflow / Thinker 工作流
+
+All frontend API traffic should flow through the Gateway at `http://localhost:8000`. Existing MiroFish endpoints stay on `/api/...`, while the new Gateway-native Thinker routes live under `/api/v1/thinker/...`.
+
+### 1. Create a Thinker job
+
+Use `POST /api/v1/thinker/jobs` to enqueue research before simulation materialization.
+
+- `topic_only` mode: send JSON with `mode`, `research_direction`, and optional `seed_text`.
+- `upload` mode: send `multipart/form-data` with `mode`, `research_direction`, optional `seed_text`, and repeated `files` parts. The Gateway extracts text from uploads and rejects empty upload jobs.
+- `polymarket` mode: send JSON or multipart fields with `mode`, `research_direction`, and `polymarket_event`. The selected market payload is normalized before Thinker runs.
+
+Example JSON request:
+
+```json
+{
+  "mode": "polymarket",
+  "research_direction": "Election pricing drift",
+  "polymarket_event": {
+    "title": "Will X win?",
+    "description": "Market event"
+  }
+}
+```
+
+### 2. Poll for status
+
+Use `GET /api/v1/thinker/jobs/{job_id}` until the job reaches `succeeded`, `failed`, `materialized`, or `skipped`.
+
+Status responses include:
+
+- `result` when Thinker succeeds
+- `error_code`, `error_message`, and `retryable` when execution fails
+- `available_actions` so the frontend can surface `retry` or `skip`
+- `can_continue_without_thinker` so downstream simulation flows know whether manual continuation is allowed
+
+### 3. Materialize adopted output into simulation inputs
+
+After a job succeeds, call `POST /api/v1/thinker/materialize` with the stored `job_id` and any user-edited overrides:
+
+```json
+{
+  "job_id": "thinker-job-id",
+  "adopted": {
+    "expanded_topics": ["Fed"],
+    "enriched_seed_text": "Edited seed text",
+    "suggested_simulation_prompt": "Edited simulation requirement"
+  }
+}
+```
+
+The Gateway returns a normalized payload with `final_topics`, `final_seed_text`, and `final_simulation_requirement`, which is the contract expected by downstream simulation setup.
+
+### 4. Retry or skip
+
+- `POST /api/v1/thinker/jobs/{job_id}/retry` recreates a failed job in `created` state and reruns the orchestration.
+- `POST /api/v1/thinker/jobs/{job_id}/skip` marks a failed or succeeded job as `skipped`, letting the UI move on without adopting Thinker output.
+- Skipped and materialized jobs are terminal states. Frontends should stop polling once they reach one of those states.
 
 ## License / 许可证
 
