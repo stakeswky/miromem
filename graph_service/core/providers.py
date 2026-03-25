@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from typing import Any, get_origin
+
 from graphiti_core.cross_encoder.openai_reranker_client import OpenAIRerankerClient
 from graphiti_core.driver.falkordb_driver import FalkorDriver
 from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
 from graphiti_core.llm_client import LLMConfig
+from graphiti_core.llm_client.config import ModelSize
 from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
+from graphiti_core.prompts.models import Message
+from pydantic import BaseModel
 
 from miromem.graph_service.core.config import GraphServiceSettings
 
@@ -15,6 +20,84 @@ def _clean_base_url(value: str) -> str | None:
     """Normalize blank OpenAI-compatible base URLs to None."""
     cleaned = value.strip()
     return cleaned or None
+
+
+class StructuredOutputCompatClient(OpenAIGenericClient):
+    """OpenAI-compatible client with provider-side JSON wording and shape normalization."""
+
+    JSON_HINT = (
+        "\n\nReturn valid JSON. The response must be a JSON object that matches the requested schema exactly."
+    )
+
+    async def _generate_response(
+        self,
+        messages: list[Message],
+        response_model: type[BaseModel] | None = None,
+        max_tokens: int = 16384,
+        model_size: ModelSize = ModelSize.medium,
+    ) -> dict[str, Any]:
+        normalized_messages = self._with_json_hint(messages) if response_model is not None else messages
+        payload = await super()._generate_response(
+            normalized_messages,
+            response_model=response_model,
+            max_tokens=max_tokens,
+            model_size=model_size,
+        )
+        if response_model is None:
+            return payload
+        return self._normalize_payload_shape(payload, response_model)
+
+    def _with_json_hint(self, messages: list[Message]) -> list[Message]:
+        cloned = [message.model_copy(deep=True) for message in messages]
+        if cloned and cloned[0].role == "system":
+            if "json" not in cloned[0].content.lower():
+                cloned[0].content += self.JSON_HINT
+            return cloned
+        return [Message(role="system", content=self.JSON_HINT.strip()), *cloned]
+
+    def _normalize_payload_shape(
+        self,
+        payload: dict[str, Any],
+        response_model: type[BaseModel],
+    ) -> dict[str, Any]:
+        model_fields = response_model.model_fields
+        if len(model_fields) != 1:
+            return payload
+
+        field_name, field_info = next(iter(model_fields.items()))
+        if field_name in payload:
+            return payload
+
+        if isinstance(payload, list):
+            return {field_name: payload}
+
+        alias_candidates = [
+            field_name,
+            field_name.replace("_", ""),
+            _to_camel_case(field_name),
+        ]
+        if field_name.startswith("extracted_"):
+            suffix = field_name[len("extracted_") :]
+            alias_candidates.extend([suffix, _to_camel_case(suffix)])
+        alias_candidates.extend(["items", "results", "data", "entities", "edges", "summaries"])
+
+        for candidate in alias_candidates:
+            value = payload.get(candidate)
+            if value is not None:
+                return {field_name: value}
+
+        list_values = [value for value in payload.values() if isinstance(value, list)]
+        if len(list_values) == 1 and get_origin(field_info.annotation) is list:
+            return {field_name: list_values[0]}
+
+        return payload
+
+
+def _to_camel_case(value: str) -> str:
+    parts = value.split("_")
+    if not parts:
+        return value
+    return parts[0] + "".join(part.capitalize() for part in parts[1:])
 
 
 def build_graph_driver(settings: GraphServiceSettings) -> FalkorDriver:
@@ -35,7 +118,7 @@ def build_llm_client(settings: GraphServiceSettings) -> OpenAIGenericClient:
         base_url=_clean_base_url(settings.graph_llm_base_url),
         model=settings.graph_llm_model,
     )
-    return OpenAIGenericClient(config=config)
+    return StructuredOutputCompatClient(config=config)
 
 
 def build_embedder(settings: GraphServiceSettings) -> OpenAIEmbedder:
