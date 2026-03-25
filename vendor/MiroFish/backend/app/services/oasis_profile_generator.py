@@ -16,10 +16,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from openai import OpenAI
-from zep_cloud.client import Zep
 
 from ..config import Config
 from ..utils.logger import get_logger
+from .graph_backend_client import GraphBackendClient
 from .zep_entity_reader import EntityNode, ZepEntityReader
 
 logger = get_logger('mirofish.oasis_profile')
@@ -197,16 +197,26 @@ class OasisProfileGenerator:
             base_url=self.base_url
         )
         
+        self.backend = Config.GRAPH_BACKEND
+        self.graph_client = None
+
         # Zep客户端用于检索丰富上下文
         self.zep_api_key = zep_api_key or Config.ZEP_API_KEY
         self.zep_client = None
         self.graph_id = graph_id
-        
-        if self.zep_api_key:
+
+        if self.backend == "graphiti":
+            self.graph_client = GraphBackendClient(Config.GRAPH_SERVICE_BASE_URL)
+        elif self.zep_api_key:
             try:
-                self.zep_client = Zep(api_key=self.zep_api_key)
+                self.zep_client = self._build_zep_client(self.zep_api_key)
             except Exception as e:
                 logger.warning(f"Zep客户端初始化失败: {e}")
+
+    def _build_zep_client(self, api_key: str):
+        from zep_cloud.client import Zep
+
+        return Zep(api_key=api_key)
     
     def generate_profile_from_entity(
         self, 
@@ -297,7 +307,7 @@ class OasisProfileGenerator:
         """
         import concurrent.futures
         
-        if not self.zep_client:
+        if self.backend != "graphiti" and not self.zep_client:
             return {"facts": [], "node_summaries": [], "context": ""}
         
         entity_name = entity.name
@@ -314,6 +324,56 @@ class OasisProfileGenerator:
             return results
         
         comprehensive_query = f"关于{entity_name}的所有信息、活动、事件、关系和背景"
+
+        def normalize_strings(values: Any) -> List[str]:
+            normalized = []
+            seen = set()
+            for value in values or []:
+                text = str(value).strip()
+                if text and text not in seen:
+                    seen.add(text)
+                    normalized.append(text)
+            return normalized
+
+        if self.backend == "graphiti":
+            if not self.graph_client:
+                return results
+
+            payload = {
+                "query": comprehensive_query,
+                "limit": 30,
+            }
+            if entity.uuid:
+                payload["center_node_uuid"] = entity.uuid
+
+            try:
+                search_result = self.graph_client.search(self.graph_id, payload)
+                results["facts"] = normalize_strings(search_result.get("facts"))
+                results["node_summaries"] = normalize_strings(search_result.get("node_summaries"))
+
+                context = str(search_result.get("context", "") or "").strip()
+                if context:
+                    results["context"] = context
+                else:
+                    context_parts = []
+                    if results["facts"]:
+                        context_parts.append(
+                            "事实信息:\n" + "\n".join(f"- {fact}" for fact in results["facts"][:20])
+                        )
+                    if results["node_summaries"]:
+                        context_parts.append(
+                            "相关实体:\n" + "\n".join(f"- {summary}" for summary in results["node_summaries"][:10])
+                        )
+                    results["context"] = "\n\n".join(context_parts)
+
+                logger.info(
+                    f"图谱检索完成: {entity_name}, 获取 {len(results['facts'])} 条事实, "
+                    f"{len(results['node_summaries'])} 个相关节点"
+                )
+            except Exception as e:
+                logger.warning(f"图谱检索失败 ({entity_name}): {e}")
+
+            return results
         
         def search_edges():
             """搜索边（事实/关系）- 带重试机制"""
@@ -1197,4 +1257,3 @@ class OasisProfileGenerator:
         """[已废弃] 请使用 save_profiles() 方法"""
         logger.warning("save_profiles_to_json已废弃，请使用save_profiles方法")
         self.save_profiles(profiles, file_path, platform)
-

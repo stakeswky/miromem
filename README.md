@@ -53,6 +53,23 @@ docker compose up -d
 python scripts/demo.py
 ```
 
+### Graphiti Rollout
+
+Start the internal graph path with `docker compose up -d --build graph-service falkordb`, or let `docker compose up -d --build` bring those services up alongside the rest of the stack. `mirofish` reaches Graphiti through `GRAPH_SERVICE_BASE_URL=http://graph-service:8001`, while Gateway keeps its current proxy paths unchanged.
+
+To enable the Graphiti path, set the following in `.env` before starting or rebuilding the stack:
+
+```bash
+GRAPH_BACKEND=graphiti
+GRAPH_SERVICE_BASE_URL=http://graph-service:8001
+FALKORDB_HOST=falkordb
+FALKORDB_PORT=6379
+```
+
+To roll back to the previous Zep-backed path, set `GRAPH_BACKEND=zep` and restart the stack with `docker compose up -d --build`. This keeps the existing MiroFish flow in place while disabling the Graphiti backend wiring.
+
+Thinker remains upstream and unchanged. It still enriches inputs before the normal graph build and simulation flow, and it does not take on any Graphiti-specific or FalkorDB-specific configuration.
+
 <!-- PLACEHOLDER_MODULES -->
 
 ## Modules / 模块概览
@@ -142,6 +159,9 @@ Copy `.env.template` to `.env` and fill in your values. Key variables:
 | `LLM_MODEL` | Model name | `x-ai/grok-4-fast` |
 | `EMBEDDING_API_KEY` | Embedding model API key | — |
 | `EMBEDDING_MODEL` | Embedding model name | `Qwen/Qwen3-Embedding-4B` |
+| `GRAPH_BACKEND` | Graph backend switch for MiroFish rollout | `zep` |
+| `GRAPH_SERVICE_BASE_URL` | Internal URL used by MiroFish to reach graph-service | `http://graph-service:8001` |
+| `FALKORDB_HOST` | FalkorDB host for graph-service | `falkordb` |
 | `MONGODB_URI` | MongoDB connection string | `mongodb://root:miromem@mongodb:27017` |
 | `MONGODB_DB` | Database name | `miromem` |
 | `MILVUS_HOST` | Milvus vector DB host | `milvus-standalone` |

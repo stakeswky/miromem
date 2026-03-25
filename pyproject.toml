@@ -10,11 +10,13 @@ dependencies = [
     "uvicorn>=0.24.0",
     "httpx>=0.25.0",
     "pydantic>=2.5.0",
+    "pydantic-settings>=2.0.0",
     "motor>=3.3.0",
     "pymilvus>=2.4.0",
     "elasticsearch[async]>=8.0.0",
     "redis>=5.0.0",
     "openai>=1.0.0",
+    "graphiti-core[falkordb]>=0.28.2",
 ]
 
 [project.optional-dependencies]
@@ -28,6 +30,20 @@ dev = [
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools.packages.find]
-where = [".."]
-include = ["miromem*"]
+[tool.setuptools]
+packages = [
+    "miromem",
+    "miromem.bridge",
+    "miromem.config",
+    "miromem.evolution",
+    "miromem.gateway",
+    "miromem.graph",
+    "miromem.graph_service",
+    "miromem.graph_service.api",
+    "miromem.graph_service.core",
+    "miromem.graph_service.domain",
+    "miromem.graph_service.storage",
+    "miromem.graph_service.workers",
+    "miromem.simulation",
+]
+package-dir = { miromem = "." }
