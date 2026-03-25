@@ -133,7 +133,7 @@ def test_build_reranker_custom_provider_is_startup_safe():
     assert build_reranker(settings) is None
 
 
-def test_build_graphiti_passes_through_optional_reranker(monkeypatch):
+def test_build_graphiti_injects_disabled_reranker_when_provider_is_disabled(monkeypatch):
     captured: dict[str, object] = {}
     driver = object()
     llm_client = object()
@@ -155,4 +155,4 @@ def test_build_graphiti_passes_through_optional_reranker(monkeypatch):
     assert captured["graph_driver"] is driver
     assert captured["llm_client"] is llm_client
     assert captured["embedder"] is embedder
-    assert captured["cross_encoder"] is None
+    assert isinstance(captured["cross_encoder"], graphiti_factory_module.DisabledReranker)
