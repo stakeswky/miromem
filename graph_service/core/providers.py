@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any, get_args, get_origin
 
 from graphiti_core.cross_encoder.openai_reranker_client import OpenAIRerankerClient
@@ -45,7 +47,7 @@ class StructuredOutputCompatClient(OpenAIGenericClient):
         )
         if response_model is None:
             return payload
-        return self._normalize_payload_shape(payload, response_model)
+        return self._normalize_payload_shape(payload, response_model, normalized_messages)
 
     def _with_json_hint(self, messages: list[Message]) -> list[Message]:
         cloned = [message.model_copy(deep=True) for message in messages]
@@ -59,6 +61,7 @@ class StructuredOutputCompatClient(OpenAIGenericClient):
         self,
         payload: dict[str, Any],
         response_model: type[BaseModel],
+        messages: list[Message],
     ) -> dict[str, Any]:
         model_fields = response_model.model_fields
         if len(model_fields) != 1:
@@ -67,11 +70,15 @@ class StructuredOutputCompatClient(OpenAIGenericClient):
         field_name, field_info = next(iter(model_fields.items()))
         if field_name in payload:
             normalized = dict(payload)
-            normalized[field_name] = self._normalize_field_value(payload[field_name], field_info.annotation)
+            normalized[field_name] = self._normalize_field_value(
+                payload[field_name],
+                field_info.annotation,
+                messages,
+            )
             return normalized
 
         if isinstance(payload, list):
-            return {field_name: payload}
+            return {field_name: self._normalize_field_value(payload, field_info.annotation, messages)}
 
         alias_candidates = [
             field_name,
@@ -86,27 +93,44 @@ class StructuredOutputCompatClient(OpenAIGenericClient):
         for candidate in alias_candidates:
             value = payload.get(candidate)
             if value is not None:
-                return {field_name: self._normalize_field_value(value, field_info.annotation)}
+                return {
+                    field_name: self._normalize_field_value(
+                        value,
+                        field_info.annotation,
+                        messages,
+                    )
+                }
 
         list_values = [value for value in payload.values() if isinstance(value, list)]
         if len(list_values) == 1 and get_origin(field_info.annotation) is list:
-            return {field_name: self._normalize_field_value(list_values[0], field_info.annotation)}
+            return {
+                field_name: self._normalize_field_value(
+                    list_values[0],
+                    field_info.annotation,
+                    messages,
+                )
+            }
 
         return payload
 
-    def _normalize_field_value(self, value: Any, annotation: Any) -> Any:
+    def _normalize_field_value(self, value: Any, annotation: Any, messages: list[Message]) -> Any:
         origin = get_origin(annotation)
         args = get_args(annotation)
         if origin is list and args and isinstance(value, list):
             item_model = args[0]
             if isinstance(item_model, type) and issubclass(item_model, BaseModel):
                 return [
-                    self._normalize_model_dict(item, item_model) if isinstance(item, dict) else item
+                    self._normalize_model_dict(item, item_model, messages) if isinstance(item, dict) else item
                     for item in value
                 ]
         return value
 
-    def _normalize_model_dict(self, payload: dict[str, Any], model: type[BaseModel]) -> dict[str, Any]:
+    def _normalize_model_dict(
+        self,
+        payload: dict[str, Any],
+        model: type[BaseModel],
+        messages: list[Message],
+    ) -> dict[str, Any]:
         normalized = dict(payload)
         for field_name in model.model_fields:
             if field_name in normalized:
@@ -115,6 +139,8 @@ class StructuredOutputCompatClient(OpenAIGenericClient):
                 if candidate in normalized:
                     normalized[field_name] = normalized.pop(candidate)
                     break
+        if model.__name__ == "ExtractedEntity":
+            _normalize_extracted_entity(normalized, messages)
         return normalized
 
 
@@ -132,12 +158,54 @@ def _alias_candidates(field_name: str) -> list[str]:
         _to_camel_case(field_name),
     ]
     if field_name == "name":
-        candidates.extend(["entity_name", "node_name"])
+        candidates.extend(["entity_name", "node_name", "text", "entity"])
     if field_name == "source_entity_name":
         candidates.extend(["source_name", "source"])
     if field_name == "target_entity_name":
         candidates.extend(["target_name", "target"])
     return candidates
+
+
+def _normalize_extracted_entity(payload: dict[str, Any], messages: list[Message]) -> None:
+    if "entity_type_id" in payload:
+        return
+
+    raw_type = payload.pop("type", None) or payload.pop("entity_type", None) or payload.pop("entity_type_name", None)
+    if raw_type is None:
+        payload["entity_type_id"] = 0
+        return
+
+    entity_type_map = _extract_entity_type_map(messages)
+    normalized_type = str(raw_type).strip().lower()
+    payload["entity_type_id"] = entity_type_map.get(normalized_type, _fallback_entity_type_id(normalized_type, entity_type_map))
+
+
+def _extract_entity_type_map(messages: list[Message]) -> dict[str, int]:
+    combined = "\n".join(message.content for message in messages)
+    match = re.search(r"<ENTITY TYPES>\s*(.*?)\s*</ENTITY TYPES>", combined, flags=re.DOTALL)
+    if not match:
+        return {}
+
+    try:
+        entries = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return {}
+
+    mapping: dict[str, int] = {}
+    for entry in entries:
+        name = str(entry.get("entity_type_name", "")).strip()
+        if not name:
+            continue
+        mapping[name.lower()] = int(entry.get("entity_type_id", 0))
+    return mapping
+
+
+def _fallback_entity_type_id(normalized_type: str, entity_type_map: dict[str, int]) -> int:
+    if normalized_type in {"person", "human", "individual"} and "person" in entity_type_map:
+        return entity_type_map["person"]
+    if normalized_type in {"organization", "org", "company"} and "organization" in entity_type_map:
+        return entity_type_map["organization"]
+    return 0
 
 
 def build_graph_driver(settings: GraphServiceSettings) -> FalkorDriver:
