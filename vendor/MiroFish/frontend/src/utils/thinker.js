@@ -322,6 +322,33 @@ export function buildThinkerMaterializePayload(jobId, draft = {}) {
   }
 }
 
+const requireScenarioFinalPrompt = (value, context) => {
+  const finalPrompt = toStringValue(value).trim()
+
+  if (finalPrompt === '') {
+    throw new Error(`${context} requires a non-empty finalPrompt`)
+  }
+
+  return finalPrompt
+}
+
+export function buildScenarioThinkerMaterializePayload(jobId, draft = {}) {
+  const finalPrompt = requireScenarioFinalPrompt(
+    draft?.finalPrompt
+    ?? draft?.final_prompt
+    ?? draft?.finalSimulationPrompt
+    ?? draft?.final_simulation_prompt
+    ?? draft?.finalSimulationRequirement
+    ?? draft?.final_simulation_requirement,
+    'Scenario Thinker materialize payload'
+  )
+
+  return buildThinkerMaterializePayload(jobId, {
+    ...draft,
+    finalPrompt
+  })
+}
+
 export function shouldPreservePolymarketThinkerSession(options = {}) {
   const thinkerJobId = toStringValue(options.thinkerJobId ?? options.jobId).trim()
   const thinkerJobMode = toStringValue(options.thinkerJobMode ?? options.jobMode).trim()
@@ -368,7 +395,7 @@ function validateScenarioMaterializedPayload(materialized) {
     throw new TypeError('Scenario Thinker materialized payload must be an object')
   }
 
-  const finalSeedText = toStringValue(materialized.final_seed_text).trim()
+  const finalSeedText = normalizeThinkerMaterialized(materialized).finalSeedText.trim()
   if (finalSeedText === '') {
     throw new Error(
       'Scenario Thinker materialized payload must include a non-empty final_seed_text'
@@ -378,7 +405,23 @@ function validateScenarioMaterializedPayload(materialized) {
 
 export function buildScenarioThinkerPendingUploadPayload(materialized, options = {}) {
   validateScenarioMaterializedPayload(materialized)
-  return buildPendingUploadPayloadFromMaterialized(materialized, options)
+  const finalPrompt = requireScenarioFinalPrompt(
+    options.finalPrompt
+    ?? options.final_prompt
+    ?? options.finalSimulationPrompt
+    ?? options.final_simulation_prompt
+    ?? options.finalSimulationRequirement
+    ?? options.final_simulation_requirement,
+    'Scenario Thinker pending upload'
+  )
+
+  return buildPendingUploadPayloadFromMaterialized({
+    ...materialized,
+    final_simulation_requirement: finalPrompt
+  }, {
+    ...options,
+    finalPrompt
+  })
 }
 
 export const toThinkerDraft = hydrateThinkerDraft

@@ -7,6 +7,7 @@ if (typeof globalThis.File === 'undefined') {
 
 const {
   buildScenarioThinkerJobPayload,
+  buildScenarioThinkerMaterializePayload,
   buildScenarioThinkerPendingUploadPayload,
   buildThinkerSeedFile,
   createScenarioThinkerDraft,
@@ -125,23 +126,25 @@ async function testScenarioThinkerJobPayloadUsesTopicOnlyMode() {
   )
 }
 
-async function testScenarioThinkerDraftTracksPromptOwnership() {
+async function testScenarioFlowContractFromReadyDraftToPendingUpload() {
+  clearPendingUpload()
+
+  const originalPrompt = 'What happens to rates-sensitive assets?'
+  const suggestedPrompt = 'Model rates-sensitive assets under a sticky inflation pause.'
+  const adoptedPrompt = 'Focus on REITs and duration-sensitive equities.'
+
   const draft = createScenarioThinkerDraft({
-    originalPrompt: 'What happens to rates-sensitive assets?',
-    suggestedPrompt: 'Model rates-sensitive assets under a sticky inflation pause.',
-    finalPrompt: 'Focus on REITs and duration-sensitive equities.',
+    originalPrompt,
+    suggestedPrompt,
     seedText: '# Expanded seed'
   })
 
-  assert.equal(draft.originalPrompt, 'What happens to rates-sensitive assets?')
-  assert.equal(
-    draft.suggestedPrompt,
-    'Model rates-sensitive assets under a sticky inflation pause.'
-  )
+  assert.equal(draft.originalPrompt, originalPrompt)
+  assert.equal(draft.suggestedPrompt, suggestedPrompt)
   assert.equal(
     draft.finalPrompt,
-    'Focus on REITs and duration-sensitive equities.',
-    'finalPrompt should stay distinct from both the original and Thinker-suggested prompts'
+    suggestedPrompt,
+    'ready drafts should default the adopted prompt to the Thinker suggestion'
   )
   assert.equal(draft.generatedSeedText, '# Expanded seed')
   assert.throws(
@@ -151,68 +154,54 @@ async function testScenarioThinkerDraftTracksPromptOwnership() {
     TypeError,
     'originalPrompt should remain read-only'
   )
-}
 
-async function testScenarioPendingUploadUsesMaterializedPayloadContract() {
-  const materializedPayload = {
+  draft.finalPrompt = adoptedPrompt
+
+  const materializePayload = buildScenarioThinkerMaterializePayload('job-scenario-1', draft)
+  assert.equal(materializePayload.job_id, 'job-scenario-1')
+  assert.equal(
+    materializePayload.adopted.suggested_simulation_prompt,
+    adoptedPrompt,
+    'scenario materialization should persist the final adopted prompt without fallback'
+  )
+  assert.equal(
+    materializePayload.adopted.enriched_seed_text,
+    '# Expanded seed',
+    'scenario materialization should persist the edited seed draft'
+  )
+
+  const pendingPayload = buildScenarioThinkerPendingUploadPayload({
     final_topics: [' Macro ', '', 'Rates'],
     final_seed_text: '# Final adopted seed',
-    final_simulation_requirement: 'Focus on REITs and duration-sensitive equities.'
-  }
+    final_simulation_requirement: 'backend should not override the adopted prompt'
+  }, {
+    finalPrompt: adoptedPrompt
+  })
 
-  const pendingPayload = buildScenarioThinkerPendingUploadPayload(materializedPayload)
+  setPendingUpload(pendingPayload)
 
+  const pending = getPendingUpload()
   assert.equal(
-    pendingPayload.simulationRequirement,
-    'Focus on REITs and duration-sensitive equities.',
-    'scenario pending upload should use materialized final_simulation_requirement downstream'
+    pending.simulationRequirement,
+    adoptedPrompt,
+    'scenario downstream routing must use the final adopted prompt as the only truth'
   )
+  assert.equal(pending.finalSimulationRequirement, adoptedPrompt)
+  assert.deepEqual(pending.finalTopics, ['Macro', 'Rates'])
+  assert.equal(pending.finalSeedText, '# Final adopted seed')
+  assert.equal(pending.files.length, 1)
   assert.equal(
-    pendingPayload.finalSimulationRequirement,
-    'Focus on REITs and duration-sensitive equities.'
-  )
-  assert.deepEqual(pendingPayload.finalTopics, ['Macro', 'Rates'])
-  assert.equal(pendingPayload.finalSeedText, '# Final adopted seed')
-  assert.equal(pendingPayload.files.length, 1)
-  assert.equal(
-    await pendingPayload.files[0].text(),
+    await pending.files[0].text(),
     '# Final adopted seed',
     'scenario synthetic seed file should contain the materialized adopted seed text'
   )
 }
 
-async function testScenarioPendingUploadFallsBackToExplicitFinalPromptWhenNeeded() {
-  const materializedPayload = {
-    final_topics: ['Rates'],
-    final_seed_text: '# Final adopted seed',
-    final_simulation_requirement: ''
-  }
-
-  const pendingPayload = buildScenarioThinkerPendingUploadPayload(materializedPayload, {
-    finalPrompt: 'Focus on REITs and duration-sensitive equities.'
-  })
-
-  assert.equal(
-    pendingPayload.simulationRequirement,
-    'Focus on REITs and duration-sensitive equities.',
-    'scenario pending upload should accept the explicit final prompt only as a fallback'
-  )
-  assert.equal(
-    pendingPayload.finalSimulationRequirement,
-    'Focus on REITs and duration-sensitive equities.'
-  )
-  assert.equal(pendingPayload.finalSeedText, '# Final adopted seed')
-  assert.equal(pendingPayload.files.length, 1)
-  assert.equal(
-    await pendingPayload.files[0].text(),
-    '# Final adopted seed',
-    'scenario synthetic seed file should contain the adopted seed text'
-  )
-}
-
 async function testScenarioPendingUploadRejectsMalformedMaterializedPayload() {
   assert.throws(
-    () => buildScenarioThinkerPendingUploadPayload(null),
+    () => buildScenarioThinkerPendingUploadPayload(null, {
+      finalPrompt: 'Focus on REITs and duration-sensitive equities.'
+    }),
     /must be an object/i,
     'scenario pending upload should fail fast when materialized payload is not an object'
   )
@@ -221,9 +210,30 @@ async function testScenarioPendingUploadRejectsMalformedMaterializedPayload() {
     () => buildScenarioThinkerPendingUploadPayload({
       final_topics: ['Rates'],
       final_seed_text: '   '
+    }, {
+      finalPrompt: 'Focus on REITs and duration-sensitive equities.'
     }),
     /final_seed_text/i,
     'scenario pending upload should fail fast when final_seed_text is missing or empty'
+  )
+
+  assert.throws(
+    () => buildScenarioThinkerMaterializePayload('job-scenario-1', {
+      generatedSeedText: '# Expanded seed',
+      finalPrompt: '   '
+    }),
+    /finalPrompt/i,
+    'scenario materialization should fail fast when the adopted prompt is blank'
+  )
+
+  assert.throws(
+    () => buildScenarioThinkerPendingUploadPayload({
+      final_topics: ['Rates'],
+      final_seed_text: '# Final adopted seed',
+      final_simulation_requirement: 'backend prompt'
+    }),
+    /finalPrompt/i,
+    'scenario pending upload should fail fast when the final adopted prompt is missing'
   )
 }
 
@@ -340,9 +350,7 @@ async function main() {
   await testLegacyPendingUploadSignature()
   await testCreatePendingUploadPayloadForThinkerAdoption()
   await testScenarioThinkerJobPayloadUsesTopicOnlyMode()
-  await testScenarioThinkerDraftTracksPromptOwnership()
-  await testScenarioPendingUploadUsesMaterializedPayloadContract()
-  await testScenarioPendingUploadFallsBackToExplicitFinalPromptWhenNeeded()
+  await testScenarioFlowContractFromReadyDraftToPendingUpload()
   await testScenarioPendingUploadRejectsMalformedMaterializedPayload()
   await testShouldPreservePolymarketThinkerSession()
   await testNormalizeThinkerAvailableActions()

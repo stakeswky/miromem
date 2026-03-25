@@ -417,7 +417,7 @@
                 <div v-if="scenarioThinkerStatus === 'idle'" class="scenario-actions">
                   <button
                     class="thinker-primary-btn"
-                    :disabled="scenarioShellActionsDisabled"
+                    :disabled="!scenarioCanStart"
                     @click="startScenarioThinker"
                   >
                     启动引擎
@@ -430,14 +430,14 @@
                 >
                   <button
                     class="thinker-primary-btn"
-                    :disabled="scenarioShellActionsDisabled"
+                    :disabled="!scenarioCanAdopt"
                     @click="adoptScenarioThinkerResult"
                   >
                     采用 Thinker 结果
                   </button>
                   <button
                     class="thinker-secondary-btn"
-                    :disabled="scenarioShellActionsDisabled"
+                    :disabled="!scenarioCanRegenerate"
                     @click="regenerateScenarioThinker"
                   >
                     重新生成
@@ -450,14 +450,14 @@
                 >
                   <button
                     class="thinker-secondary-btn"
-                    :disabled="scenarioShellActionsDisabled"
+                    :disabled="!scenarioCanRegenerate"
                     @click="regenerateScenarioThinker"
                   >
                     重新生成
                   </button>
                 </div>
 
-                <div class="scenario-placeholder-message">
+                <div v-else class="scenario-placeholder-message">
                   {{ scenarioShellPendingNotice }}
                 </div>
               </div>
@@ -633,6 +633,9 @@ import {
 } from '../api/thinker'
 import { setPendingUpload } from '../store/pendingUpload.js'
 import {
+  buildScenarioThinkerJobPayload,
+  buildScenarioThinkerMaterializePayload,
+  buildScenarioThinkerPendingUploadPayload,
   buildThinkerJobPayload,
   buildThinkerMaterializePayload,
   buildThinkerPendingUploadPayload,
@@ -774,8 +777,17 @@ const scenarioOriginalPrompt = computed(() => (
   scenarioThinkerDraft.value.originalPrompt || scenarioForm.value.prompt
 ))
 
-const scenarioShellActionsDisabled = true
-const scenarioShellPendingNotice = '当前仅提供现况输入 UI 壳体，Thinker 接线与后续流转将在下一步实现；动作按钮暂不可用。'
+const scenarioCanAdopt = computed(() => (
+  scenarioThinkerStatus.value === 'ready' &&
+  scenarioThinkerJobId.value !== '' &&
+  scenarioThinkerDraft.value.finalPrompt.trim() !== ''
+))
+
+const scenarioCanRegenerate = computed(() => (
+  scenarioForm.value.direction.trim() !== '' &&
+  scenarioForm.value.prompt.trim() !== '' &&
+  !loading.value
+))
 
 const canRetryThinkerAction = computed(() => (
   thinkerAvailableActions.value.includes('retry')
@@ -827,7 +839,19 @@ const thinkerRunningHelpText = computed(() => (
 ))
 
 const scenarioThinkerHelpText = computed(() => (
-  '当前为现况输入 UI 壳体预览，Thinker 接线尚未完成。'
+  {
+    idle: 'Thinker 会仅基于当前现实方向生成现实种子草稿，再给出建议提示词；没有跳过路径，只有采用后才会继续。',
+    running: 'Thinker 正在扩展当前现实方向，请等待任务完成。',
+    ready: '原始提示词与 Thinker 建议提示词均为只读参考，只有“最终采用提示词”会进入下游模拟流程。',
+    error: 'Thinker 执行失败。此标签页没有跳过路径，请调整输入后重新生成。',
+    materialized: 'Thinker 结果已采用，正在进入模拟流程。'
+  }[scenarioThinkerStatus.value] || 'Thinker 正在准备现况输入结果。'
+))
+
+const scenarioShellPendingNotice = computed(() => (
+  scenarioThinkerStatus.value === 'materialized'
+    ? 'Thinker 结果已采用，正在进入模拟流程。'
+    : 'Thinker 正在基于当前现实方向扩展现实种子与建议提示词，请等待结果。'
 ))
 
 const startButtonLabel = computed(() => {
@@ -1232,17 +1256,161 @@ const buildFallbackFilesFromThinkerSnapshot = (snapshot) => {
   return [...snapshot.files]
 }
 
-// Scenario tab only adds the local shell in this task; real lifecycle wiring follows next.
-const startScenarioThinker = () => {
-  if (!scenarioCanStart.value) return
+const applyScenarioThinkerJobState = (job, options = {}) => {
+  const state = normalizeThinkerJobState(job)
+
+  if (job?.job_id) {
+    scenarioThinkerJobId.value = job.job_id
+  }
+
+  if (state.status === 'succeeded') {
+    scenarioThinkerStatus.value = 'ready'
+    scenarioThinkerDraft.value = createScenarioThinkerDraft({
+      originalPrompt: scenarioForm.value.prompt,
+      expandedTopics: job?.result?.expanded_topics,
+      generatedSeedText: job?.result?.enriched_seed_text,
+      suggestedPrompt: job?.result?.suggested_simulation_prompt
+    })
+    if (!options.preserveError) {
+      scenarioThinkerError.value = ''
+    }
+    return
+  }
+
+  if (state.status === 'failed') {
+    scenarioThinkerStatus.value = 'error'
+    scenarioThinkerDraft.value = createEmptyScenarioDraft()
+    scenarioThinkerError.value = state.errorMessage || 'Thinker 分析失败'
+    return
+  }
+
+  if (state.status === 'materialized') {
+    scenarioThinkerStatus.value = 'materialized'
+    if (!options.preserveError) {
+      scenarioThinkerError.value = ''
+    }
+    return
+  }
+
+  if (state.status === 'created' || state.status === 'running') {
+    scenarioThinkerStatus.value = 'running'
+    if (!options.preserveError) {
+      scenarioThinkerError.value = ''
+    }
+    return
+  }
+
+  scenarioThinkerStatus.value = state.status || 'idle'
+  if (!options.preserveError) {
+    scenarioThinkerError.value = ''
+  }
 }
 
-const adoptScenarioThinkerResult = () => {
-  if (scenarioThinkerStatus.value !== 'ready') return
+const pollScenarioThinkerJob = async (jobId) => {
+  try {
+    const terminalJob = await pollThinkerJobUntilTerminal(jobId, getThinkerJob, {
+      onUpdate: job => {
+        const state = normalizeThinkerJobState(job)
+        if (state.status === 'created' || state.status === 'running') {
+          scenarioThinkerStatus.value = 'running'
+        }
+      }
+    })
+
+    applyScenarioThinkerJobState(terminalJob)
+    return terminalJob
+  } catch (err) {
+    const recoveredState = await resolveThinkerPollErrorState(jobId, getThinkerJob, err)
+
+    if (recoveredState.job) {
+      applyScenarioThinkerJobState(recoveredState.job, {
+        preserveError: !recoveredState.isTerminal
+      })
+
+      if (!recoveredState.isTerminal) {
+        scenarioThinkerStatus.value = 'running'
+        scenarioThinkerError.value = recoveredState.errorMessage
+      }
+
+      return recoveredState.job
+    }
+
+    scenarioThinkerStatus.value = 'error'
+    scenarioThinkerError.value = recoveredState.errorMessage
+    return null
+  }
 }
 
-const regenerateScenarioThinker = () => {
+const startScenarioThinker = async () => {
   if (!scenarioCanStart.value) return
+
+  loading.value = true
+  scenarioThinkerError.value = ''
+  scenarioThinkerJobId.value = ''
+  scenarioThinkerStatus.value = 'running'
+  scenarioThinkerDraft.value = createEmptyScenarioDraft()
+
+  try {
+    const job = await createThinkerJob(
+      buildScenarioThinkerJobPayload({
+        scenarioDirection: scenarioForm.value.direction
+      })
+    )
+
+    scenarioThinkerJobId.value = job?.job_id || ''
+    if (!scenarioThinkerJobId.value) {
+      scenarioThinkerStatus.value = 'error'
+      scenarioThinkerError.value = 'Thinker job 创建失败: 缺少 job_id'
+      return
+    }
+
+    applyScenarioThinkerJobState(job)
+    await pollScenarioThinkerJob(scenarioThinkerJobId.value)
+  } catch (err) {
+    scenarioThinkerStatus.value = 'error'
+    scenarioThinkerError.value = extractThinkerErrorMessage(err, 'Thinker 任务创建失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+const adoptScenarioThinkerResult = async () => {
+  if (!scenarioCanAdopt.value) return
+
+  loading.value = true
+  scenarioThinkerError.value = ''
+
+  try {
+    const response = await materializeThinkerJob(
+      buildScenarioThinkerMaterializePayload(
+        scenarioThinkerJobId.value,
+        scenarioThinkerDraft.value
+      )
+    )
+
+    scenarioThinkerStatus.value = 'materialized'
+
+    const pendingPayload = buildScenarioThinkerPendingUploadPayload(response?.payload, {
+      finalPrompt: scenarioThinkerDraft.value.finalPrompt
+    })
+
+    pushPendingUploadToProcess(pendingPayload)
+  } catch (err) {
+    scenarioThinkerError.value = extractThinkerErrorMessage(err, 'Thinker 结果采用失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+const regenerateScenarioThinker = async () => {
+  if (!scenarioCanRegenerate.value) return
+
+  scenarioThinkerJobId.value = ''
+  scenarioThinkerStatus.value = 'idle'
+  scenarioThinkerDraft.value = createEmptyScenarioDraft()
+  scenarioThinkerError.value = ''
+
+  await startScenarioThinker()
 }
 
 const skipThinkerFlow = async () => {
