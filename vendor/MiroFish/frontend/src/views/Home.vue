@@ -417,7 +417,7 @@
                 <div v-if="scenarioThinkerStatus === 'idle'" class="scenario-actions">
                   <button
                     class="thinker-primary-btn"
-                    :disabled="!scenarioCanStart"
+                    :disabled="scenarioShellActionsDisabled"
                     @click="startScenarioThinker"
                   >
                     启动引擎
@@ -430,14 +430,14 @@
                 >
                   <button
                     class="thinker-primary-btn"
-                    :disabled="loading"
+                    :disabled="scenarioShellActionsDisabled"
                     @click="adoptScenarioThinkerResult"
                   >
                     采用 Thinker 结果
                   </button>
                   <button
                     class="thinker-secondary-btn"
-                    :disabled="loading"
+                    :disabled="scenarioShellActionsDisabled"
                     @click="regenerateScenarioThinker"
                   >
                     重新生成
@@ -450,11 +450,15 @@
                 >
                   <button
                     class="thinker-secondary-btn"
-                    :disabled="loading || !scenarioCanStart"
+                    :disabled="scenarioShellActionsDisabled"
                     @click="regenerateScenarioThinker"
                   >
                     重新生成
                   </button>
+                </div>
+
+                <div class="scenario-placeholder-message">
+                  {{ scenarioShellPendingNotice }}
                 </div>
               </div>
             </div>
@@ -770,6 +774,9 @@ const scenarioOriginalPrompt = computed(() => (
   scenarioThinkerDraft.value.originalPrompt || scenarioForm.value.prompt
 ))
 
+const scenarioShellActionsDisabled = true
+const scenarioShellPendingNotice = '当前仅提供现况输入 UI 壳体，Thinker 接线与后续流转将在下一步实现；动作按钮暂不可用。'
+
 const canRetryThinkerAction = computed(() => (
   thinkerAvailableActions.value.includes('retry')
 ))
@@ -819,21 +826,9 @@ const thinkerRunningHelpText = computed(() => (
     : 'Thinker 正在分析上传内容，请等待任务完成。'
 ))
 
-const scenarioThinkerHelpText = computed(() => {
-  if (scenarioThinkerStatus.value === 'running') {
-    return 'Thinker 正在根据当前现实方向生成现实种子，完成后将开放草稿编辑区。'
-  }
-
-  if (scenarioThinkerStatus.value === 'ready') {
-    return '可编辑生成现实种子与最终采用提示词；原始提示词与 Thinker 建议提示词保持只读。'
-  }
-
-  if (scenarioThinkerStatus.value === 'error') {
-    return 'Thinker 生成失败后，可调整输入内容并重新生成。'
-  }
-
-  return '填写现实方向与模拟提示词后，可通过本标签页内的本地按钮启动 Thinker。'
-})
+const scenarioThinkerHelpText = computed(() => (
+  '当前为现况输入 UI 壳体预览，Thinker 接线尚未完成。'
+))
 
 const startButtonLabel = computed(() => {
   if (loading.value) {
@@ -1681,6 +1676,14 @@ const startSimulation = async () => {
 }
 .scenario-readonly:focus { border-color: #DDD; }
 .scenario-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.scenario-placeholder-message {
+  border: 1px dashed #D7C3B7;
+  background: #FFF8F3;
+  color: #8C5A3C;
+  padding: 12px 14px;
+  font-size: 0.82rem;
+  line-height: 1.6;
+}
 
 /* Polymarket 样式 */
 .pm-search-row { display: flex; gap: 8px; margin-bottom: 12px; }
