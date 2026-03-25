@@ -133,6 +133,11 @@
                 :class="{ active: activeTab === 'polymarket' }"
                 @click="activeTab = 'polymarket'; loadPolymarketEvents()"
               >Polymarket</button>
+              <button
+                class="tab-btn"
+                :class="{ active: activeTab === 'scenario' }"
+                @click="activeTab = 'scenario'"
+              >现况输入</button>
             </div>
 
             <!-- 上传文档 Tab -->
@@ -287,6 +292,173 @@
               </div>
             </div>
 
+            <!-- 现况输入 Tab -->
+            <div v-if="activeTab === 'scenario'" class="scenario-shell">
+              <div class="console-section">
+                <div class="console-header">
+                  <span class="console-label">01 / 现实方向</span>
+                  <span class="console-meta">仅用于 Thinker 扩展现实种子</span>
+                </div>
+                <div class="input-wrapper">
+                  <textarea
+                    v-model="scenarioForm.direction"
+                    class="code-input scenario-direction-input"
+                    placeholder="// 输入当前现实方向（例.若某城市启动极端高温限电，居民、企业与地方部门将出现怎样的连锁反应）"
+                    rows="4"
+                    :disabled="scenarioInputsDisabled"
+                  ></textarea>
+                </div>
+              </div>
+
+              <div class="console-divider">
+                <span>输入参数</span>
+              </div>
+
+              <div class="console-section">
+                <div class="console-header">
+                  <span class="console-label">>_ 02 / 模拟提示词</span>
+                </div>
+                <div class="input-wrapper">
+                  <textarea
+                    v-model="scenarioForm.prompt"
+                    class="code-input"
+                    placeholder="// 输入本次模拟关注的问题、时间窗口、观察对象与输出目标"
+                    rows="6"
+                    :disabled="scenarioInputsDisabled"
+                  ></textarea>
+                  <div class="model-badge">引擎: MiroFish-V1.0</div>
+                </div>
+              </div>
+
+              <div class="console-divider">
+                <span>Thinker 状态</span>
+              </div>
+
+              <div class="console-section">
+                <div class="scenario-status-panel">
+                  <div class="thinker-status-row">
+                    <span class="thinker-status-label">状态</span>
+                    <span
+                      class="thinker-status-badge"
+                      :class="`status-${scenarioThinkerStatus}`"
+                    >
+                      {{ formatThinkerStatus(scenarioThinkerStatus) }}
+                    </span>
+                  </div>
+
+                  <div v-if="scenarioThinkerJobId" class="scenario-status-meta">
+                    <span>Thinker Job</span>
+                    <span class="scenario-job-id">{{ scenarioThinkerJobId }}</span>
+                  </div>
+
+                  <p class="thinker-help">
+                    {{ scenarioThinkerHelpText }}
+                  </p>
+
+                  <div v-if="scenarioThinkerError" class="thinker-error">
+                    {{ scenarioThinkerError }}
+                  </div>
+                </div>
+              </div>
+
+              <div class="console-divider">
+                <span>Thinker 草稿</span>
+              </div>
+
+              <div class="console-section scenario-draft-section">
+                <div class="thinker-field">
+                  <label for="scenario-generated-seed">生成现实种子</label>
+                  <textarea
+                    id="scenario-generated-seed"
+                    v-model="scenarioThinkerDraft.generatedSeedText"
+                    class="thinker-input"
+                    rows="8"
+                    :disabled="scenarioDraftEditorsDisabled"
+                    placeholder="// Thinker 生成的现实种子将在这里出现，可在 ready 状态下编辑"
+                  ></textarea>
+                </div>
+
+                <div class="thinker-field">
+                  <label for="scenario-original-prompt">原始提示词</label>
+                  <textarea
+                    id="scenario-original-prompt"
+                    :value="scenarioOriginalPrompt"
+                    class="thinker-input scenario-readonly"
+                    rows="4"
+                    readonly
+                    placeholder="// 这里会展示用户输入的原始提示词"
+                  ></textarea>
+                </div>
+
+                <div class="thinker-field">
+                  <label for="scenario-suggested-prompt">Thinker 建议提示词</label>
+                  <textarea
+                    id="scenario-suggested-prompt"
+                    :value="scenarioThinkerDraft.suggestedPrompt"
+                    class="thinker-input scenario-readonly"
+                    rows="4"
+                    readonly
+                    placeholder="// Thinker 返回的建议提示词将在这里展示"
+                  ></textarea>
+                </div>
+
+                <div class="thinker-field">
+                  <label for="scenario-final-prompt">最终采用提示词</label>
+                  <textarea
+                    id="scenario-final-prompt"
+                    v-model="scenarioThinkerDraft.finalPrompt"
+                    class="thinker-input"
+                    rows="5"
+                    :disabled="scenarioDraftEditorsDisabled"
+                    placeholder="// ready 状态下可编辑最终采用提示词"
+                  ></textarea>
+                </div>
+
+                <div v-if="scenarioThinkerStatus === 'idle'" class="scenario-actions">
+                  <button
+                    class="thinker-primary-btn"
+                    :disabled="!scenarioCanStart"
+                    @click="startScenarioThinker"
+                  >
+                    启动引擎
+                  </button>
+                </div>
+
+                <div
+                  v-else-if="scenarioThinkerStatus === 'ready'"
+                  class="scenario-actions"
+                >
+                  <button
+                    class="thinker-primary-btn"
+                    :disabled="loading"
+                    @click="adoptScenarioThinkerResult"
+                  >
+                    采用 Thinker 结果
+                  </button>
+                  <button
+                    class="thinker-secondary-btn"
+                    :disabled="loading"
+                    @click="regenerateScenarioThinker"
+                  >
+                    重新生成
+                  </button>
+                </div>
+
+                <div
+                  v-else-if="scenarioThinkerStatus === 'error'"
+                  class="scenario-actions"
+                >
+                  <button
+                    class="thinker-secondary-btn"
+                    :disabled="loading || !scenarioCanStart"
+                    @click="regenerateScenarioThinker"
+                  >
+                    重新生成
+                  </button>
+                </div>
+              </div>
+            </div>
+
             <div
               v-if="activeTab === 'upload' || activeTab === 'polymarket'"
               class="console-section thinker-section"
@@ -420,7 +592,10 @@
             </div>
 
             <!-- 启动按钮 -->
-            <div class="console-section btn-section">
+            <div
+              v-if="activeTab !== 'scenario'"
+              class="console-section btn-section"
+            >
               <button
                 class="start-engine-btn"
                 @click="startSimulation"
@@ -457,6 +632,7 @@ import {
   buildThinkerJobPayload,
   buildThinkerMaterializePayload,
   buildThinkerPendingUploadPayload,
+  createScenarioThinkerDraft,
   extractThinkerErrorMessage,
   hydrateThinkerDraft,
   normalizeThinkerAvailableActions,
@@ -493,12 +669,24 @@ const pmEvents = ref([])
 const pmLoading = ref(false)
 const selectedEvent = ref(null)
 const pmTags = ['All', 'Crypto', 'Politics', 'Sports', 'Pop Culture', 'Science']
+const scenarioForm = ref({
+  direction: '',
+  prompt: ''
+})
+const scenarioThinkerJobId = ref('')
+const scenarioThinkerStatus = ref('idle')
+const scenarioThinkerDraft = ref(createEmptyScenarioDraft())
+const scenarioThinkerError = ref('')
 
 const createEmptyThinkerDraft = () => ({
   expandedTopics: [],
   enrichedSeedText: '',
   suggestedSimulationPrompt: ''
 })
+
+function createEmptyScenarioDraft () {
+  return createScenarioThinkerDraft()
+}
 
 const createEmptyThinkerSnapshot = () => ({
   mode: '',
@@ -563,6 +751,25 @@ const polymarketInputsDisabled = computed(() => (
   (loading.value || (thinkerEnabled.value && thinkerJobId.value !== ''))
 ))
 
+const scenarioCanStart = computed(() => (
+  scenarioForm.value.direction.trim() !== '' &&
+  scenarioForm.value.prompt.trim() !== '' &&
+  !loading.value
+))
+
+const scenarioInputsDisabled = computed(() => (
+  activeTab.value === 'scenario' &&
+  (loading.value || ['running', 'ready'].includes(scenarioThinkerStatus.value))
+))
+
+const scenarioDraftEditorsDisabled = computed(() => (
+  loading.value || scenarioThinkerStatus.value !== 'ready'
+))
+
+const scenarioOriginalPrompt = computed(() => (
+  scenarioThinkerDraft.value.originalPrompt || scenarioForm.value.prompt
+))
+
 const canRetryThinkerAction = computed(() => (
   thinkerAvailableActions.value.includes('retry')
 ))
@@ -611,6 +818,22 @@ const thinkerRunningHelpText = computed(() => (
     ? 'Thinker 正在分析选中的 Polymarket 议题，请等待任务完成。'
     : 'Thinker 正在分析上传内容，请等待任务完成。'
 ))
+
+const scenarioThinkerHelpText = computed(() => {
+  if (scenarioThinkerStatus.value === 'running') {
+    return 'Thinker 正在根据当前现实方向生成现实种子，完成后将开放草稿编辑区。'
+  }
+
+  if (scenarioThinkerStatus.value === 'ready') {
+    return '可编辑生成现实种子与最终采用提示词；原始提示词与 Thinker 建议提示词保持只读。'
+  }
+
+  if (scenarioThinkerStatus.value === 'error') {
+    return 'Thinker 生成失败后，可调整输入内容并重新生成。'
+  }
+
+  return '填写现实方向与模拟提示词后，可通过本标签页内的本地按钮启动 Thinker。'
+})
 
 const startButtonLabel = computed(() => {
   if (loading.value) {
@@ -774,9 +997,12 @@ const truncate = (s, n) => {
 const formatThinkerStatus = (status) => {
   const statusText = {
     '': '待启动',
+    idle: '待启动',
     created: '已创建',
     running: '分析中',
+    ready: '可采用',
     succeeded: '可采用',
+    error: '失败',
     failed: '失败',
     skipped: '已跳过',
     materialized: '已采用'
@@ -1009,6 +1235,19 @@ const buildFallbackFilesFromThinkerSnapshot = (snapshot) => {
   }
 
   return [...snapshot.files]
+}
+
+// Scenario tab only adds the local shell in this task; real lifecycle wiring follows next.
+const startScenarioThinker = () => {
+  if (!scenarioCanStart.value) return
+}
+
+const adoptScenarioThinkerResult = () => {
+  if (scenarioThinkerStatus.value !== 'ready') return
+}
+
+const regenerateScenarioThinker = () => {
+  if (!scenarioCanStart.value) return
 }
 
 const skipThinkerFlow = async () => {
@@ -1379,10 +1618,12 @@ const startSimulation = async () => {
 .thinker-status-badge.status-idle,
 .thinker-status-badge.status-created { border-color: #DDD; color: #777; }
 .thinker-status-badge.status-running { border-color: #999; color: #444; }
+.thinker-status-badge.status-ready,
 .thinker-status-badge.status-succeeded,
 .thinker-status-badge.status-materialized {
   border-color: var(--orange); color: var(--orange); background: #FFF5F0;
 }
+.thinker-status-badge.status-error,
 .thinker-status-badge.status-failed { border-color: #D14343; color: #D14343; background: #FFF4F4; }
 .thinker-status-badge.status-skipped { border-color: #BBB; color: #666; background: #F4F4F4; }
 .thinker-help {
@@ -1418,6 +1659,28 @@ const startSimulation = async () => {
 .thinker-secondary-btn:disabled {
   cursor: not-allowed; opacity: 0.5;
 }
+
+.scenario-shell { display: flex; flex-direction: column; }
+.scenario-direction-input { min-height: 120px; }
+.scenario-status-panel {
+  border: 1px solid #EEE; background: #FAFAFA;
+  padding: 18px; display: flex; flex-direction: column; gap: 12px;
+}
+.scenario-status-meta {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  gap: 12px; font-family: var(--font-mono); font-size: 0.72rem; color: #999;
+}
+.scenario-job-id {
+  color: #666; text-align: right; word-break: break-all;
+}
+.scenario-draft-section {
+  display: flex; flex-direction: column; gap: 14px;
+}
+.scenario-readonly {
+  background: #F5F5F5; color: #666;
+}
+.scenario-readonly:focus { border-color: #DDD; }
+.scenario-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 
 /* Polymarket 样式 */
 .pm-search-row { display: flex; gap: 8px; margin-bottom: 12px; }
