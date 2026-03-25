@@ -210,6 +210,23 @@ async function testScenarioPendingUploadFallsBackToExplicitFinalPromptWhenNeeded
   )
 }
 
+async function testScenarioPendingUploadRejectsMalformedMaterializedPayload() {
+  assert.throws(
+    () => buildScenarioThinkerPendingUploadPayload(null),
+    /must be an object/i,
+    'scenario pending upload should fail fast when materialized payload is not an object'
+  )
+
+  assert.throws(
+    () => buildScenarioThinkerPendingUploadPayload({
+      final_topics: ['Rates'],
+      final_seed_text: '   '
+    }),
+    /final_seed_text/i,
+    'scenario pending upload should fail fast when final_seed_text is missing or empty'
+  )
+}
+
 async function testShouldPreservePolymarketThinkerSession() {
   assert.equal(
     shouldPreservePolymarketThinkerSession({
@@ -326,6 +343,7 @@ async function main() {
   await testScenarioThinkerDraftTracksPromptOwnership()
   await testScenarioPendingUploadUsesMaterializedPayloadContract()
   await testScenarioPendingUploadFallsBackToExplicitFinalPromptWhenNeeded()
+  await testScenarioPendingUploadRejectsMalformedMaterializedPayload()
   await testShouldPreservePolymarketThinkerSession()
   await testNormalizeThinkerAvailableActions()
   await testResolveThinkerPollErrorStateKeepsTransportFailureSeparate()

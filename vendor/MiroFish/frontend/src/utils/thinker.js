@@ -363,7 +363,21 @@ export function buildThinkerPendingUploadPayload(materialized, options = {}) {
   return buildPendingUploadPayloadFromMaterialized(materialized, options)
 }
 
+function validateScenarioMaterializedPayload(materialized) {
+  if (!materialized || Array.isArray(materialized) || typeof materialized !== 'object') {
+    throw new TypeError('Scenario Thinker materialized payload must be an object')
+  }
+
+  const finalSeedText = toStringValue(materialized.final_seed_text).trim()
+  if (finalSeedText === '') {
+    throw new Error(
+      'Scenario Thinker materialized payload must include a non-empty final_seed_text'
+    )
+  }
+}
+
 export function buildScenarioThinkerPendingUploadPayload(materialized, options = {}) {
+  validateScenarioMaterializedPayload(materialized)
   return buildPendingUploadPayloadFromMaterialized(materialized, options)
 }
 
