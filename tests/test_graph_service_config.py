@@ -6,6 +6,8 @@ from types import SimpleNamespace
 
 import graphiti_core.driver.falkordb_driver as falkordb_driver_module
 from graphiti_core.cross_encoder.openai_reranker_client import OpenAIRerankerClient
+from graphiti_core.driver.falkordb.operations.entity_edge_ops import FalkorEntityEdgeOperations
+from graphiti_core.driver.falkordb.operations.entity_node_ops import FalkorEntityNodeOperations
 from graphiti_core.llm_client import LLMConfig
 from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
 from graphiti_core.prompts.extract_nodes import ExtractedEntities
@@ -13,9 +15,11 @@ from graphiti_core.prompts.models import Message
 import pytest
 
 import miromem.graph_service.core.graphiti_factory as graphiti_factory_module
+import miromem.graph_service.core.providers as providers_module
 from miromem.graph_service.core.config import GraphServiceSettings
 from miromem.graph_service.core.providers import (
     StructuredOutputCompatClient,
+    patch_falkor_property_serialization,
     build_embedder,
     build_graph_driver,
     build_llm_client,
@@ -240,3 +244,37 @@ def test_build_graphiti_injects_disabled_reranker_when_provider_is_disabled(monk
     assert captured["llm_client"] is llm_client
     assert captured["embedder"] is embedder
     assert isinstance(captured["cross_encoder"], graphiti_factory_module.DisabledReranker)
+
+
+def test_patch_falkor_property_serialization_wraps_node_and_edge_savers(monkeypatch):
+    captured: dict[str, object] = {}
+
+    async def fake_node_save_bulk(self, executor, nodes, tx=None, batch_size=100):
+        captured["nodes"] = nodes
+
+    async def fake_edge_save_bulk(self, executor, edges, tx=None, batch_size=100):
+        captured["edges"] = edges
+
+    monkeypatch.setattr(FalkorEntityNodeOperations, "save_bulk", fake_node_save_bulk)
+    monkeypatch.setattr(FalkorEntityEdgeOperations, "save_bulk", fake_edge_save_bulk)
+    monkeypatch.setattr(providers_module, "_FALKOR_PATCHED", False)
+
+    patch_falkor_property_serialization()
+
+    node = SimpleNamespace(attributes={"profile": {"country": "US"}, "tags": ["a", "b"], "count": 1})
+    edge = SimpleNamespace(attributes={"context": {"source": "demo"}, "scores": [1, 2], "active": True})
+
+    import asyncio
+
+    asyncio.run(FalkorEntityNodeOperations().save_bulk(None, [node]))
+    asyncio.run(FalkorEntityEdgeOperations().save_bulk(None, [edge]))
+
+    saved_node = captured["nodes"][0]
+    saved_edge = captured["edges"][0]
+
+    assert saved_node.attributes["profile"] == '{"country": "US"}'
+    assert saved_node.attributes["tags"] == ["a", "b"]
+    assert saved_node.attributes["count"] == 1
+    assert saved_edge.attributes["context"] == '{"source": "demo"}'
+    assert saved_edge.attributes["scores"] == [1, 2]
+    assert saved_edge.attributes["active"] is True

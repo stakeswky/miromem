@@ -7,6 +7,8 @@ import re
 from typing import Any, get_args, get_origin
 
 from graphiti_core.cross_encoder.openai_reranker_client import OpenAIRerankerClient
+from graphiti_core.driver.falkordb.operations.entity_edge_ops import FalkorEntityEdgeOperations
+from graphiti_core.driver.falkordb.operations.entity_node_ops import FalkorEntityNodeOperations
 from graphiti_core.driver.falkordb_driver import FalkorDriver
 from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
 from graphiti_core.llm_client import LLMConfig
@@ -22,6 +24,9 @@ def _clean_base_url(value: str) -> str | None:
     """Normalize blank OpenAI-compatible base URLs to None."""
     cleaned = value.strip()
     return cleaned or None
+
+
+_FALKOR_PATCHED = False
 
 
 class StructuredOutputCompatClient(OpenAIGenericClient):
@@ -210,6 +215,7 @@ def _fallback_entity_type_id(normalized_type: str, entity_type_map: dict[str, in
 
 def build_graph_driver(settings: GraphServiceSettings) -> FalkorDriver:
     """Build the FalkorDB driver used by Graphiti."""
+    patch_falkor_property_serialization()
     return FalkorDriver(
         host=settings.falkordb_host,
         port=settings.falkordb_port,
@@ -217,6 +223,67 @@ def build_graph_driver(settings: GraphServiceSettings) -> FalkorDriver:
         password=settings.falkordb_password or None,
         database=settings.falkordb_database,
     )
+
+
+def patch_falkor_property_serialization() -> None:
+    """Patch Graphiti Falkor save paths so nested attribute values become primitive-safe."""
+    global _FALKOR_PATCHED
+    if _FALKOR_PATCHED:
+        return
+
+    original_node_save_bulk = FalkorEntityNodeOperations.save_bulk
+    original_edge_save_bulk = FalkorEntityEdgeOperations.save_bulk
+    original_node_save = FalkorEntityNodeOperations.save
+    original_edge_save = FalkorEntityEdgeOperations.save
+
+    async def patched_node_save_bulk(self, executor, nodes, tx=None, batch_size=100):
+        sanitized_nodes = [_clone_with_safe_attributes(node) for node in nodes]
+        return await original_node_save_bulk(self, executor, sanitized_nodes, tx=tx, batch_size=batch_size)
+
+    async def patched_edge_save_bulk(self, executor, edges, tx=None, batch_size=100):
+        sanitized_edges = [_clone_with_safe_attributes(edge) for edge in edges]
+        return await original_edge_save_bulk(self, executor, sanitized_edges, tx=tx, batch_size=batch_size)
+
+    async def patched_node_save(self, executor, node, tx=None):
+        return await original_node_save(self, executor, _clone_with_safe_attributes(node), tx=tx)
+
+    async def patched_edge_save(self, executor, edge, tx=None):
+        return await original_edge_save(self, executor, _clone_with_safe_attributes(edge), tx=tx)
+
+    FalkorEntityNodeOperations.save_bulk = patched_node_save_bulk
+    FalkorEntityEdgeOperations.save_bulk = patched_edge_save_bulk
+    FalkorEntityNodeOperations.save = patched_node_save
+    FalkorEntityEdgeOperations.save = patched_edge_save
+    _FALKOR_PATCHED = True
+
+
+def _clone_with_safe_attributes(item: Any) -> Any:
+    if not hasattr(item, "attributes"):
+        return item
+    cloned = item.model_copy(deep=True) if hasattr(item, "model_copy") else item
+    raw_attributes = getattr(cloned, "attributes", None) or {}
+    setattr(cloned, "attributes", _make_falkor_attributes_safe(raw_attributes))
+    return cloned
+
+
+def _make_falkor_attributes_safe(payload: dict[str, Any]) -> dict[str, Any]:
+    return {key: _make_falkor_value_safe(value) for key, value in payload.items()}
+
+
+def _make_falkor_value_safe(value: Any) -> Any:
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, list):
+        if all(isinstance(item, (str, int, float, bool)) or item is None for item in value):
+            return value
+        return json.dumps(value, ensure_ascii=False, default=str)
+    if isinstance(value, tuple):
+        if all(isinstance(item, (str, int, float, bool)) or item is None for item in value):
+            return list(value)
+        return json.dumps(list(value), ensure_ascii=False, default=str)
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False, default=str)
+    return str(value)
 
 
 def build_llm_client(settings: GraphServiceSettings) -> OpenAIGenericClient:
