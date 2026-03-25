@@ -38,7 +38,8 @@ class BuildGraphCommand:
 class BuildWorker:
     """Queue-like abstraction that executes build jobs in process for v1."""
 
-    BULK_BUILD_TIMEOUT_SECONDS = 45
+    BULK_BUILD_TIMEOUT_SECONDS = 300
+    SINGLE_EPISODE_TIMEOUT_SECONDS = 900
 
     def __init__(
         self,
@@ -163,6 +164,14 @@ class BuildWorker:
         ontology,
         job_id: str,
     ):
+        if len(episodes) <= 1:
+            return await self._add_episodes_sequentially(
+                graphiti=graphiti,
+                graph_id=graph_id,
+                episodes=episodes,
+                ontology=ontology,
+            )
+
         try:
             return await asyncio.wait_for(
                 graphiti.add_episode_bulk(
@@ -176,14 +185,31 @@ class BuildWorker:
             )
         except Exception as exc:
             print(
-                f"build_worker[{job_id}] stage=add_episode_bulk:fallback graph_id={graph_id} reason={exc}",
+                f"build_worker[{job_id}] stage=add_episode_bulk:fallback graph_id={graph_id} "
+                f"reason={type(exc).__name__}:{exc}",
                 flush=True,
             )
-            nodes = []
-            edges = []
-            episode_results = []
-            for episode in episodes:
-                single_result = await graphiti.add_episode(
+            return await self._add_episodes_sequentially(
+                graphiti=graphiti,
+                graph_id=graph_id,
+                episodes=episodes,
+                ontology=ontology,
+            )
+
+    async def _add_episodes_sequentially(
+        self,
+        *,
+        graphiti,
+        graph_id: str,
+        episodes: list[Any],
+        ontology,
+    ):
+        nodes = []
+        edges = []
+        episode_results = []
+        for episode in episodes:
+            single_result = await asyncio.wait_for(
+                graphiti.add_episode(
                     name=episode.name,
                     episode_body=episode.content,
                     source_description=episode.source_description,
@@ -193,12 +219,14 @@ class BuildWorker:
                     entity_types=ontology.entity_types,
                     edge_types=ontology.edge_types,
                     edge_type_map=ontology.edge_type_map,
-                )
-                nodes.extend(getattr(single_result, "nodes", []))
-                edges.extend(getattr(single_result, "edges", []))
-                episode_results.append(getattr(single_result, "episode", None))
+                ),
+                timeout=self.SINGLE_EPISODE_TIMEOUT_SECONDS,
+            )
+            nodes.extend(getattr(single_result, "nodes", []))
+            edges.extend(getattr(single_result, "edges", []))
+            episode_results.append(getattr(single_result, "episode", None))
 
-            return SimpleNamespace(nodes=nodes, edges=edges, episodes=episode_results)
+        return SimpleNamespace(nodes=nodes, edges=edges, episodes=episode_results)
 
 
 def _instrument_graphiti_build_steps() -> None:
@@ -242,8 +270,37 @@ def _instrument_graphiti_build_steps() -> None:
         "dedupe_edges_bulk",
         graphiti_module.dedupe_edges_bulk,
     )
+    graphiti_module.extract_nodes = wrap_async(
+        "extract_nodes",
+        graphiti_module.extract_nodes,
+    )
+    graphiti_module.resolve_extracted_nodes = wrap_async(
+        "resolve_extracted_nodes",
+        graphiti_module.resolve_extracted_nodes,
+    )
+    graphiti_module.extract_edges = wrap_async(
+        "extract_edges",
+        graphiti_module.extract_edges,
+    )
+    graphiti_module.resolve_extracted_edges = wrap_async(
+        "resolve_extracted_edges",
+        graphiti_module.resolve_extracted_edges,
+    )
+    graphiti_module.extract_attributes_from_nodes = wrap_async(
+        "extract_attributes_from_nodes",
+        graphiti_module.extract_attributes_from_nodes,
+    )
     graphiti_module.resolve_edge_pointers = wrap_sync(
         "resolve_edge_pointers",
         graphiti_module.resolve_edge_pointers,
     )
+    original_process_episode_data = graphiti_module.Graphiti._process_episode_data
+
+    async def patched_process_episode_data(self, *args, **kwargs):
+        print("graphiti_stage:start:_process_episode_data", flush=True)
+        result = await original_process_episode_data(self, *args, **kwargs)
+        print("graphiti_stage:end:_process_episode_data", flush=True)
+        return result
+
+    graphiti_module.Graphiti._process_episode_data = patched_process_episode_data
     _GRAPHITI_BUILD_INSTRUMENTED = True

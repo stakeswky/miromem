@@ -7,7 +7,9 @@ from inspect import isawaitable
 from typing import Any
 
 from graphiti_core import Graphiti
+from graphiti_core.edges import EntityEdge
 from graphiti_core.errors import GroupsEdgesNotFoundError, GroupsNodesNotFoundError
+from graphiti_core.nodes import EntityNode
 from graphiti_core.search.search_config import (
     EdgeReranker,
     EdgeSearchConfig,
@@ -76,7 +78,7 @@ class GraphQueryService:
         limit: int = 10,
         center_node_uuid: str | None = None,
     ) -> dict[str, Any]:
-        graphiti = self._graphiti_factory()
+        graphiti = _scope_graphiti_to_graph(self._graphiti_factory(), graph_id)
         try:
             results = await graphiti.search_(
                 query=query,
@@ -112,15 +114,16 @@ class GraphQueryService:
         }
 
     async def _read_graph(self, graph_id: str) -> tuple[list[Any], list[Any]]:
-        graphiti = self._graphiti_factory()
+        graphiti = _scope_graphiti_to_graph(self._graphiti_factory(), graph_id)
         try:
+            driver = graphiti.driver
             try:
-                nodes = await graphiti.nodes.entity.get_by_group_ids([graph_id])
+                nodes = await EntityNode.get_by_group_ids(driver, [graph_id])
             except GroupsNodesNotFoundError:
                 nodes = []
 
             try:
-                edges = await graphiti.edges.entity.get_by_group_ids([graph_id])
+                edges = await EntityEdge.get_by_group_ids(driver, [graph_id])
             except GroupsEdgesNotFoundError:
                 edges = []
 
@@ -220,6 +223,19 @@ def _dedupe_strings(values: list[str] | Any) -> list[str]:
         seen.add(value)
         deduped.append(value)
     return deduped
+
+
+def _scope_graphiti_to_graph(graphiti: Any, graph_id: str) -> Any:
+    driver = getattr(graphiti, "driver", None)
+    if driver is None or not hasattr(driver, "clone"):
+        return graphiti
+
+    scoped_driver = driver.clone(database=graph_id)
+    graphiti.driver = scoped_driver
+    clients = getattr(graphiti, "clients", None)
+    if clients is not None:
+        clients.driver = scoped_driver
+    return graphiti
 
 
 async def _close_graphiti(graphiti: Any) -> None:

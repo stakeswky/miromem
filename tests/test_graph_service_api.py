@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event, Thread
@@ -14,7 +15,11 @@ import pytest
 
 import miromem.graph_service.workers.build_worker as build_worker_module
 from miromem.graph_service.app import create_app
+import miromem.graph_service.domain.query_service as query_service_module
 from miromem.graph_service.domain.query_service import GraphQueryService
+from miromem.graph_service.storage.snapshot_store import InMemorySnapshotStore
+import miromem.graph_service.workers.snapshot_worker as snapshot_worker_module
+from miromem.graph_service.workers.snapshot_worker import SnapshotWorker
 
 
 def test_compose_wires_falkordb_and_graph_service_for_mirofish() -> None:
@@ -115,6 +120,49 @@ class _FakeGraphiti:
             edges=[{"uuid": "edge-1"}],
             episode={"uuid": f"episode-{len(self.single_calls)}"},
         )
+
+
+class _ReadFakeDriver:
+    def __init__(self, database: str = "miromem_graph") -> None:
+        self._database = database
+
+    def clone(self, *, database: str):
+        return _ReadFakeDriver(database)
+
+
+class _StickyReadAccessor:
+    def __init__(self, driver: _ReadFakeDriver) -> None:
+        self._driver = driver
+
+    async def get_by_group_ids(self, group_ids: list[str]):
+        if self._driver._database != group_ids[0]:
+            return []
+        return [
+            SimpleNamespace(
+                uuid="node-1",
+                name="Alice",
+                labels=["Entity", "Person"],
+                summary="Leader",
+                attributes={"role": "lead"},
+                created_at=None,
+            )
+        ]
+
+
+class _StickyReadAwareGraphiti:
+    async def get_by_group_ids(self, group_ids: list[str]):
+        return []
+
+
+class _ReadAwareGraphiti:
+    def __init__(self) -> None:
+        self.driver = _ReadFakeDriver()
+        self.clients = SimpleNamespace(driver=self.driver)
+        self.nodes = SimpleNamespace(entity=_StickyReadAccessor(self.driver))
+        self.edges = SimpleNamespace(entity=_StickyReadAwareGraphiti())
+
+    async def close(self) -> None:
+        return None
 
 
 def _wait_for_job_completion(client: TestClient, job_id: str, timeout_seconds: float = 2.0) -> dict[str, object]:
@@ -257,6 +305,42 @@ def test_build_worker_falls_back_to_sequential_add_episode_when_bulk_fails(monke
             json={
                 "project_id": "proj_demo",
                 "graph_name": "Demo",
+                "document_text": "Alice follows Bob. Carol advises Dana.",
+                "chunk_size": 12,
+                "chunk_overlap": 0,
+                "ontology": {"entity_types": [], "edge_types": []},
+            },
+        )
+
+        assert response.status_code == 202
+        payload = _wait_for_job_completion(client, response.json()["job_id"])
+
+    assert payload["status"] == "completed"
+    assert len(fake_graphiti.bulk_calls) == 1
+    assert len(fake_graphiti.single_calls) == 4
+
+
+def test_build_worker_skips_bulk_for_single_episode_builds(monkeypatch):
+    fake_graphiti = _FakeGraphiti()
+
+    def fake_compile_ontology(ontology):
+        return SimpleNamespace(
+            entity_types={"Person": object},
+            edge_types={"KNOWS": object},
+            edge_type_map={("Person", "Person"): ["KNOWS"]},
+        )
+
+    monkeypatch.setattr(build_worker_module, "build_graphiti", lambda settings: fake_graphiti)
+    monkeypatch.setattr(build_worker_module, "compile_ontology", fake_compile_ontology)
+
+    app = create_app()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/graphs/mirofish_demo/build",
+            json={
+                "project_id": "proj_demo",
+                "graph_name": "Demo",
                 "document_text": "Alice follows Bob.",
                 "chunk_size": 500,
                 "chunk_overlap": 50,
@@ -268,8 +352,144 @@ def test_build_worker_falls_back_to_sequential_add_episode_when_bulk_fails(monke
         payload = _wait_for_job_completion(client, response.json()["job_id"])
 
     assert payload["status"] == "completed"
-    assert len(fake_graphiti.bulk_calls) == 1
+    assert len(fake_graphiti.bulk_calls) == 0
     assert len(fake_graphiti.single_calls) == 1
+
+
+def test_build_worker_marks_job_failed_when_sequential_fallback_times_out(monkeypatch):
+    class _SlowFallbackGraphiti(_FakeGraphiti):
+        async def add_episode(
+            self,
+            *,
+            name,
+            episode_body,
+            source_description,
+            reference_time,
+            source,
+            group_id,
+            entity_types,
+            edge_types,
+            edge_type_map,
+        ):
+            await asyncio.sleep(0.05)
+            return await super().add_episode(
+                name=name,
+                episode_body=episode_body,
+                source_description=source_description,
+                reference_time=reference_time,
+                source=source,
+                group_id=group_id,
+                entity_types=entity_types,
+                edge_types=edge_types,
+                edge_type_map=edge_type_map,
+            )
+
+    fake_graphiti = _SlowFallbackGraphiti(bulk_error=RuntimeError("bulk failed"))
+
+    def fake_compile_ontology(ontology):
+        return SimpleNamespace(
+            entity_types={"Person": object},
+            edge_types={"KNOWS": object},
+            edge_type_map={("Person", "Person"): ["KNOWS"]},
+        )
+
+    monkeypatch.setattr(build_worker_module, "build_graphiti", lambda settings: fake_graphiti)
+    monkeypatch.setattr(build_worker_module, "compile_ontology", fake_compile_ontology)
+    monkeypatch.setattr(build_worker_module.BuildWorker, "SINGLE_EPISODE_TIMEOUT_SECONDS", 0.01, raising=False)
+
+    app = create_app()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/graphs/mirofish_demo/build",
+            json={
+                "project_id": "proj_demo",
+                "graph_name": "Demo",
+                "document_text": "Alice follows Bob.",
+                "chunk_size": 500,
+                "chunk_overlap": 50,
+                "ontology": {"entity_types": [], "edge_types": []},
+            },
+        )
+
+        assert response.status_code == 202
+        job_id = response.json()["job_id"]
+        deadline = monotonic() + 2.0
+        payload: dict[str, object] | None = None
+        while monotonic() < deadline:
+            poll = client.get(f"/jobs/{job_id}")
+            assert poll.status_code == 200
+            payload = poll.json()
+            if payload["status"] == "failed":
+                break
+            sleep(0.02)
+
+    assert payload is not None
+    assert payload["status"] == "failed"
+    assert "TimeoutError" in payload["error_message"] or "timed out" in payload["error_message"]
+
+
+@pytest.mark.asyncio
+async def test_snapshot_worker_reads_from_graph_specific_database(monkeypatch):
+    async def fake_node_get_by_group_ids(driver, group_ids, *args, **kwargs):
+        if driver._database != group_ids[0]:
+            return []
+        return [
+            SimpleNamespace(
+                uuid="node-1",
+                name="Alice",
+                labels=["Entity", "Person"],
+                summary="Leader",
+                attributes={"role": "lead"},
+                created_at=None,
+            )
+        ]
+
+    async def fake_edge_get_by_group_ids(driver, group_ids, *args, **kwargs):
+        return []
+
+    monkeypatch.setattr(snapshot_worker_module, "EntityNode", SimpleNamespace(get_by_group_ids=fake_node_get_by_group_ids), raising=False)
+    monkeypatch.setattr(snapshot_worker_module, "EntityEdge", SimpleNamespace(get_by_group_ids=fake_edge_get_by_group_ids), raising=False)
+    worker = SnapshotWorker(
+        graphiti_factory=_ReadAwareGraphiti,
+        snapshot_store=InMemorySnapshotStore(),
+    )
+
+    snapshot = await worker.refresh_snapshot("mirofish_demo")
+
+    assert snapshot["graph_id"] == "mirofish_demo"
+    assert snapshot["node_count"] == 1
+    assert snapshot["nodes"][0]["name"] == "Alice"
+
+
+@pytest.mark.asyncio
+async def test_query_service_reads_from_graph_specific_database(monkeypatch):
+    async def fake_node_get_by_group_ids(driver, group_ids, *args, **kwargs):
+        if driver._database != group_ids[0]:
+            return []
+        return [
+            SimpleNamespace(
+                uuid="node-1",
+                name="Alice",
+                labels=["Entity", "Person"],
+                summary="Leader",
+                attributes={"role": "lead"},
+                created_at=None,
+            )
+        ]
+
+    async def fake_edge_get_by_group_ids(driver, group_ids, *args, **kwargs):
+        return []
+
+    monkeypatch.setattr(query_service_module, "EntityNode", SimpleNamespace(get_by_group_ids=fake_node_get_by_group_ids), raising=False)
+    monkeypatch.setattr(query_service_module, "EntityEdge", SimpleNamespace(get_by_group_ids=fake_edge_get_by_group_ids), raising=False)
+    service = GraphQueryService(graphiti_factory=_ReadAwareGraphiti)
+
+    payload = await service.list_entities(graph_id="mirofish_demo")
+
+    assert payload["total_count"] == 1
+    assert payload["filtered_count"] == 1
+    assert payload["entities"][0]["name"] == "Alice"
 
 
 def test_snapshot_endpoint_returns_last_successful_snapshot_when_refresh_failed():

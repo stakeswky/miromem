@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
+from contextlib import contextmanager
 from typing import Any, get_args, get_origin
 
+import graphiti_core.driver.falkordb_driver as falkordb_driver_module
+import graphiti_core.graphiti as graphiti_module
+import graphiti_core.utils.maintenance.edge_operations as edge_operations_module
+import httpx
+import openai
 from graphiti_core.cross_encoder.openai_reranker_client import OpenAIRerankerClient
 from graphiti_core.driver.falkordb.operations.entity_edge_ops import FalkorEntityEdgeOperations
 from graphiti_core.driver.falkordb.operations.entity_node_ops import FalkorEntityNodeOperations
@@ -15,9 +22,20 @@ from graphiti_core.llm_client import LLMConfig
 from graphiti_core.llm_client.config import ModelSize
 from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
 from graphiti_core.prompts.models import Message
+from graphiti_core.search.search import SearchResults
+from graphiti_core.utils import bulk_utils as bulk_utils_module
+from openai import AsyncOpenAI
 from pydantic import BaseModel
 
 from miromem.graph_service.core.config import GraphServiceSettings
+
+logger = logging.getLogger(__name__)
+
+COMPAT_LLM_MAX_TOKENS = 2048
+COMPAT_LLM_TEMPERATURE = 0.0
+COMPAT_LLM_TIMEOUT_SECONDS = 180.0
+COMPAT_EMBEDDING_TIMEOUT_SECONDS = 60.0
+EDGE_RESOLUTION_MAX_CONCURRENCY = 2
 
 
 def _clean_base_url(value: str) -> str | None:
@@ -27,6 +45,7 @@ def _clean_base_url(value: str) -> str | None:
 
 
 _FALKOR_PATCHED = False
+_GRAPHITI_EDGE_RUNTIME_PATCHED = False
 
 
 class StructuredOutputCompatClient(OpenAIGenericClient):
@@ -44,15 +63,42 @@ class StructuredOutputCompatClient(OpenAIGenericClient):
         model_size: ModelSize = ModelSize.medium,
     ) -> dict[str, Any]:
         normalized_messages = self._with_json_hint(messages) if response_model is not None else messages
-        payload = await super()._generate_response(
-            normalized_messages,
-            response_model=response_model,
+        openai_messages: list[dict[str, str]] = []
+        for message in normalized_messages:
+            message.content = self._clean_input(message.content)
+            if message.role in {"user", "system"}:
+                openai_messages.append({"role": message.role, "content": message.content})
+
+        response = await self.client.chat.completions.create(
+            model=self.model or self.config.model,
+            messages=openai_messages,
+            temperature=self.temperature,
             max_tokens=max_tokens,
-            model_size=model_size,
+            response_format=self._build_response_format(response_model),
         )
+        payload = json.loads(response.choices[0].message.content or "{}")
         if response_model is None:
             return payload
         return self._normalize_payload_shape(payload, response_model, normalized_messages)
+
+    def _build_response_format(self, response_model: type[BaseModel] | None) -> dict[str, Any]:
+        if response_model is None:
+            return {"type": "json_object"}
+        if self._uses_compat_structured_output_mode():
+            return {"type": "json_object"}
+
+        schema_name = getattr(response_model, "__name__", "structured_response")
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": schema_name,
+                "schema": response_model.model_json_schema(),
+            },
+        }
+
+    def _uses_compat_structured_output_mode(self) -> bool:
+        base_url = (self.config.base_url or "").lower()
+        return bool(base_url) and "api.openai.com" not in base_url
 
     def _with_json_hint(self, messages: list[Message]) -> list[Message]:
         cloned = [message.model_copy(deep=True) for message in messages]
@@ -216,13 +262,60 @@ def _fallback_entity_type_id(normalized_type: str, entity_type_map: dict[str, in
 def build_graph_driver(settings: GraphServiceSettings) -> FalkorDriver:
     """Build the FalkorDB driver used by Graphiti."""
     patch_falkor_property_serialization()
-    return FalkorDriver(
-        host=settings.falkordb_host,
-        port=settings.falkordb_port,
-        username=settings.falkordb_username or None,
-        password=settings.falkordb_password or None,
-        database=settings.falkordb_database,
-    )
+    patch_graphiti_edge_resolution_runtime()
+    with _disable_falkor_auto_index_task():
+        return FalkorDriver(
+            host=settings.falkordb_host,
+            port=settings.falkordb_port,
+            username=settings.falkordb_username or None,
+            password=settings.falkordb_password or None,
+            database=settings.falkordb_database,
+        )
+
+
+@contextmanager
+def _disable_falkor_auto_index_task():
+    """Prevent FalkorDriver from scheduling a duplicate background index task during init."""
+    original_get_running_loop = falkordb_driver_module.asyncio.get_running_loop
+
+    def _raise_no_loop():
+        raise RuntimeError("auto index task disabled")
+
+    falkordb_driver_module.asyncio.get_running_loop = _raise_no_loop
+    try:
+        yield
+    finally:
+        falkordb_driver_module.asyncio.get_running_loop = original_get_running_loop
+
+
+def patch_graphiti_edge_resolution_runtime() -> None:
+    """Limit Graphiti edge-resolution concurrency and degrade timed-out searches."""
+    global _GRAPHITI_EDGE_RUNTIME_PATCHED
+    if _GRAPHITI_EDGE_RUNTIME_PATCHED:
+        return
+
+    original_semaphore_gather = edge_operations_module.semaphore_gather
+    original_search = edge_operations_module.search
+
+    async def patched_semaphore_gather(*coroutines, max_coroutines=None):
+        bounded = max_coroutines if max_coroutines is not None else EDGE_RESOLUTION_MAX_CONCURRENCY
+        return await original_semaphore_gather(*coroutines, max_coroutines=bounded)
+
+    async def patched_search(*args, **kwargs):
+        try:
+            return await original_search(*args, **kwargs)
+        except (
+            TimeoutError,
+            httpx.TimeoutException,
+            openai.APITimeoutError,
+            openai.APIConnectionError,
+        ) as exc:
+            logger.warning("Graphiti edge search degraded after timeout: %s", exc)
+            return SearchResults()
+
+    edge_operations_module.semaphore_gather = patched_semaphore_gather
+    edge_operations_module.search = patched_search
+    _GRAPHITI_EDGE_RUNTIME_PATCHED = True
 
 
 def patch_falkor_property_serialization() -> None:
@@ -235,6 +328,7 @@ def patch_falkor_property_serialization() -> None:
     original_edge_save_bulk = FalkorEntityEdgeOperations.save_bulk
     original_node_save = FalkorEntityNodeOperations.save
     original_edge_save = FalkorEntityEdgeOperations.save
+    original_bulk_add_nodes_and_edges = bulk_utils_module.add_nodes_and_edges_bulk
 
     async def patched_node_save_bulk(self, executor, nodes, tx=None, batch_size=100):
         sanitized_nodes = [_clone_with_safe_attributes(node) for node in nodes]
@@ -250,10 +344,31 @@ def patch_falkor_property_serialization() -> None:
     async def patched_edge_save(self, executor, edge, tx=None):
         return await original_edge_save(self, executor, _clone_with_safe_attributes(edge), tx=tx)
 
+    async def patched_bulk_add_nodes_and_edges(
+        driver,
+        episodic_nodes,
+        episodic_edges,
+        entity_nodes,
+        entity_edges,
+        embedder,
+    ):
+        sanitized_nodes = [_clone_with_safe_attributes(node) for node in entity_nodes]
+        sanitized_edges = [_clone_with_safe_attributes(edge) for edge in entity_edges]
+        return await original_bulk_add_nodes_and_edges(
+            driver,
+            episodic_nodes,
+            episodic_edges,
+            sanitized_nodes,
+            sanitized_edges,
+            embedder,
+        )
+
     FalkorEntityNodeOperations.save_bulk = patched_node_save_bulk
     FalkorEntityEdgeOperations.save_bulk = patched_edge_save_bulk
     FalkorEntityNodeOperations.save = patched_node_save
     FalkorEntityEdgeOperations.save = patched_edge_save
+    bulk_utils_module.add_nodes_and_edges_bulk = patched_bulk_add_nodes_and_edges
+    graphiti_module.add_nodes_and_edges_bulk = patched_bulk_add_nodes_and_edges
     _FALKOR_PATCHED = True
 
 
@@ -292,8 +407,20 @@ def build_llm_client(settings: GraphServiceSettings) -> OpenAIGenericClient:
         api_key=settings.graph_llm_api_key or "",
         base_url=_clean_base_url(settings.graph_llm_base_url),
         model=settings.graph_llm_model,
+        temperature=COMPAT_LLM_TEMPERATURE,
+        max_tokens=COMPAT_LLM_MAX_TOKENS,
     )
-    return StructuredOutputCompatClient(config=config)
+    client = AsyncOpenAI(
+        api_key=config.api_key,
+        base_url=config.base_url,
+        timeout=COMPAT_LLM_TIMEOUT_SECONDS,
+        max_retries=0,
+    )
+    return StructuredOutputCompatClient(
+        config=config,
+        client=client,
+        max_tokens=COMPAT_LLM_MAX_TOKENS,
+    )
 
 
 def build_embedder(settings: GraphServiceSettings) -> OpenAIEmbedder:
@@ -304,7 +431,13 @@ def build_embedder(settings: GraphServiceSettings) -> OpenAIEmbedder:
         embedding_model=settings.graph_embedding_model,
         embedding_dim=settings.graph_embedding_dim,
     )
-    return OpenAIEmbedder(config=config)
+    client = AsyncOpenAI(
+        api_key=config.api_key,
+        base_url=config.base_url,
+        timeout=COMPAT_EMBEDDING_TIMEOUT_SECONDS,
+        max_retries=0,
+    )
+    return OpenAIEmbedder(config=config, client=client)
 
 
 def build_reranker(settings: GraphServiceSettings) -> OpenAIRerankerClient | None:

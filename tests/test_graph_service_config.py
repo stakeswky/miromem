@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import graphiti_core.driver.falkordb_driver as falkordb_driver_module
+import graphiti_core.graphiti as runtime_graphiti_module
 from graphiti_core.cross_encoder.openai_reranker_client import OpenAIRerankerClient
 from graphiti_core.driver.falkordb.operations.entity_edge_ops import FalkorEntityEdgeOperations
 from graphiti_core.driver.falkordb.operations.entity_node_ops import FalkorEntityNodeOperations
@@ -12,6 +13,7 @@ from graphiti_core.llm_client import LLMConfig
 from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
 from graphiti_core.prompts.extract_nodes import ExtractedEntities
 from graphiti_core.prompts.models import Message
+from graphiti_core.utils import bulk_utils as bulk_utils_module
 import pytest
 
 import miromem.graph_service.core.graphiti_factory as graphiti_factory_module
@@ -79,6 +81,30 @@ def test_build_graph_driver_uses_falkor(monkeypatch):
     }
 
 
+def test_build_graph_driver_does_not_schedule_background_index_task(monkeypatch):
+    captured = _stub_falkordb(monkeypatch)
+    created_tasks: list[object] = []
+
+    class FakeLoop:
+        def create_task(self, coro):
+            created_tasks.append(coro)
+            return object()
+
+    monkeypatch.setattr(falkordb_driver_module.asyncio, "get_running_loop", lambda: FakeLoop())
+
+    settings = GraphServiceSettings(
+        falkordb_host="falkor",
+        falkordb_port=6379,
+        falkordb_database="mirofish_graphs",
+    )
+
+    driver = build_graph_driver(settings)
+
+    assert driver.provider.value == "falkordb"
+    assert captured["host"] == "falkor"
+    assert created_tasks == []
+
+
 def test_build_llm_client_uses_openai_compatible_settings():
     settings = GraphServiceSettings(
         graph_llm_api_key="key",
@@ -136,6 +162,45 @@ async def test_structured_output_client_injects_json_hint_and_normalizes_entity_
 
 
 @pytest.mark.asyncio
+async def test_structured_output_client_uses_json_object_for_compat_backends():
+    captured: dict[str, object] = {}
+
+    class FakeCompletions:
+        async def create(self, *, model, messages, temperature, max_tokens, response_format):
+            captured["response_format"] = response_format
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content='{"extracted_entities":[{"name":"Alice","entity_type_id":0}]}'
+                        )
+                    )
+                ]
+            )
+
+    fake_client = SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions()))
+    client = StructuredOutputCompatClient(
+        config=LLMConfig(
+            api_key="key",
+            base_url="https://coding.dashscope.aliyuncs.com/v1",
+            model="qwen3.5-plus",
+        ),
+        client=fake_client,
+    )
+
+    await client.generate_response(
+        [
+            Message(role="system", content="Extract entities from the content."),
+            Message(role="user", content="Alice discusses election forecasting."),
+        ],
+        response_model=ExtractedEntities,
+        prompt_name="test.extract_nodes.response_format",
+    )
+
+    assert captured["response_format"] == {"type": "json_object"}
+
+
+@pytest.mark.asyncio
 async def test_structured_output_client_normalizes_nested_entity_name_keys():
     class FakeCompletions:
         async def create(self, *, model, messages, temperature, max_tokens, response_format):
@@ -185,6 +250,34 @@ def test_build_embedder_uses_openai_compatible_settings():
     assert embedder.config.base_url == "https://embed.example.com/v1"
     assert embedder.config.embedding_model == "Qwen/Qwen3-Embedding-0.6B"
     assert embedder.config.embedding_dim == 1024
+
+
+def test_build_embedder_configures_async_client_timeout(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakeAsyncOpenAI:
+        def __init__(self, *, api_key, base_url, timeout, max_retries):
+            captured["api_key"] = api_key
+            captured["base_url"] = base_url
+            captured["timeout"] = timeout
+            captured["max_retries"] = max_retries
+
+    monkeypatch.setattr(providers_module, "AsyncOpenAI", FakeAsyncOpenAI)
+
+    settings = GraphServiceSettings(
+        graph_embedding_api_key="key",
+        graph_embedding_base_url="https://embed.example.com/v1",
+        graph_embedding_model="Qwen/Qwen3-Embedding-0.6B",
+        graph_embedding_dim=1024,
+    )
+
+    embedder = build_embedder(settings)
+
+    assert embedder.client.__class__ is FakeAsyncOpenAI
+    assert captured["api_key"] == "key"
+    assert captured["base_url"] == "https://embed.example.com/v1"
+    assert captured["timeout"] == providers_module.COMPAT_EMBEDDING_TIMEOUT_SECONDS
+    assert captured["max_retries"] == 0
 
 
 def test_build_reranker_returns_none_when_unconfigured():
@@ -278,3 +371,66 @@ def test_patch_falkor_property_serialization_wraps_node_and_edge_savers(monkeypa
     assert saved_edge.attributes["context"] == '{"source": "demo"}'
     assert saved_edge.attributes["scores"] == [1, 2]
     assert saved_edge.attributes["active"] is True
+
+
+def test_patch_falkor_property_serialization_wraps_graphiti_bulk_writer(monkeypatch):
+    captured: dict[str, object] = {}
+
+    async def fake_add_nodes_and_edges_bulk(
+        driver,
+        episodic_nodes,
+        episodic_edges,
+        entity_nodes,
+        entity_edges,
+        embedder,
+    ):
+        captured["entity_nodes"] = entity_nodes
+        captured["entity_edges"] = entity_edges
+
+    monkeypatch.setattr(runtime_graphiti_module, "add_nodes_and_edges_bulk", fake_add_nodes_and_edges_bulk)
+    monkeypatch.setattr(bulk_utils_module, "add_nodes_and_edges_bulk", fake_add_nodes_and_edges_bulk)
+    monkeypatch.setattr(providers_module, "_FALKOR_PATCHED", False)
+
+    patch_falkor_property_serialization()
+
+    node = SimpleNamespace(attributes={"profile": {"country": "US"}, "tags": ["a", "b"], "count": 1})
+    edge = SimpleNamespace(attributes={"context": {"source": "demo"}, "scores": [1, 2], "active": True})
+
+    import asyncio
+
+    asyncio.run(runtime_graphiti_module.add_nodes_and_edges_bulk(None, [], [], [node], [edge], None))
+
+    saved_node = captured["entity_nodes"][0]
+    saved_edge = captured["entity_edges"][0]
+
+    assert saved_node.attributes["profile"] == '{"country": "US"}'
+    assert saved_node.attributes["tags"] == ["a", "b"]
+    assert saved_node.attributes["count"] == 1
+    assert saved_edge.attributes["context"] == '{"source": "demo"}'
+    assert saved_edge.attributes["scores"] == [1, 2]
+    assert saved_edge.attributes["active"] is True
+
+
+@pytest.mark.asyncio
+async def test_patch_graphiti_edge_resolution_runtime_bounds_concurrency_and_degrades_timeouts(monkeypatch):
+    captured: dict[str, object] = {}
+
+    async def fake_semaphore_gather(*coroutines, max_coroutines=None):
+        captured["max_coroutines"] = max_coroutines
+        return []
+
+    async def fake_search(*args, **kwargs):
+        raise TimeoutError("edge search timed out")
+
+    monkeypatch.setattr(providers_module.edge_operations_module, "semaphore_gather", fake_semaphore_gather)
+    monkeypatch.setattr(providers_module.edge_operations_module, "search", fake_search)
+    monkeypatch.setattr(providers_module, "_GRAPHITI_EDGE_RUNTIME_PATCHED", False)
+
+    providers_module.patch_graphiti_edge_resolution_runtime()
+
+    result = await providers_module.edge_operations_module.search(None, "fact", None, None, None)
+    await providers_module.edge_operations_module.semaphore_gather("a", "b")
+
+    assert result.edges == []
+    assert result.nodes == []
+    assert captured["max_coroutines"] == providers_module.EDGE_RESOLUTION_MAX_CONCURRENCY
