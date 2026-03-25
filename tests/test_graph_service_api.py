@@ -38,11 +38,19 @@ def test_compose_wires_falkordb_and_graph_service_for_mirofish() -> None:
 
 
 class _FakeGraphiti:
-    def __init__(self, *, started_event: Event | None = None, release_event: Event | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        started_event: Event | None = None,
+        release_event: Event | None = None,
+        bulk_error: Exception | None = None,
+    ) -> None:
         self.bulk_calls: list[dict[str, object]] = []
+        self.single_calls: list[dict[str, object]] = []
         self.indices_built = False
         self.started_event = started_event
         self.release_event = release_event
+        self.bulk_error = bulk_error
 
     async def build_indices_and_constraints(self, delete_existing: bool = False) -> None:
         self.indices_built = True
@@ -69,9 +77,43 @@ class _FakeGraphiti:
             self.started_event.set()
         if self.release_event is not None:
             self.release_event.wait(timeout=5)
+        if self.bulk_error is not None:
+            raise self.bulk_error
         return SimpleNamespace(
             nodes=[{"uuid": "node-1"}, {"uuid": "node-2"}],
             edges=[{"uuid": "edge-1"}],
+        )
+
+    async def add_episode(
+        self,
+        *,
+        name,
+        episode_body,
+        source_description,
+        reference_time,
+        source,
+        group_id,
+        entity_types,
+        edge_types,
+        edge_type_map,
+    ):
+        self.single_calls.append(
+            {
+                "name": name,
+                "episode_body": episode_body,
+                "source_description": source_description,
+                "reference_time": reference_time,
+                "source": source,
+                "group_id": group_id,
+                "entity_types": entity_types,
+                "edge_types": edge_types,
+                "edge_type_map": edge_type_map,
+            }
+        )
+        return SimpleNamespace(
+            nodes=[{"uuid": "node-1"}, {"uuid": "node-2"}],
+            edges=[{"uuid": "edge-1"}],
+            episode={"uuid": f"episode-{len(self.single_calls)}"},
         )
 
 
@@ -192,6 +234,42 @@ def test_health_routes_exist():
         assert ready.status_code == 200
         assert live.json()["status"] == "ok"
         assert ready.json()["status"] == "ok"
+
+
+def test_build_worker_falls_back_to_sequential_add_episode_when_bulk_fails(monkeypatch):
+    fake_graphiti = _FakeGraphiti(bulk_error=RuntimeError("bulk failed"))
+
+    def fake_compile_ontology(ontology):
+        return SimpleNamespace(
+            entity_types={"Person": object},
+            edge_types={"KNOWS": object},
+            edge_type_map={("Person", "Person"): ["KNOWS"]},
+        )
+
+    monkeypatch.setattr(build_worker_module, "build_graphiti", lambda settings: fake_graphiti)
+    monkeypatch.setattr(build_worker_module, "compile_ontology", fake_compile_ontology)
+
+    app = create_app()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/graphs/mirofish_demo/build",
+            json={
+                "project_id": "proj_demo",
+                "graph_name": "Demo",
+                "document_text": "Alice follows Bob.",
+                "chunk_size": 500,
+                "chunk_overlap": 50,
+                "ontology": {"entity_types": [], "edge_types": []},
+            },
+        )
+
+        assert response.status_code == 202
+        payload = _wait_for_job_completion(client, response.json()["job_id"])
+
+    assert payload["status"] == "completed"
+    assert len(fake_graphiti.bulk_calls) == 1
+    assert len(fake_graphiti.single_calls) == 1
 
 
 def test_snapshot_endpoint_returns_last_successful_snapshot_when_refresh_failed():
