@@ -341,38 +341,30 @@ export function shouldPreservePolymarketThinkerSession(options = {}) {
   )
 }
 
-export function buildThinkerPendingUploadPayload(materialized, options = {}) {
+function buildPendingUploadPayloadFromMaterialized(materialized, options = {}) {
   const normalized = normalizeThinkerMaterialized(materialized)
   const baseFiles = normalizeFiles(options.baseFiles ?? options.files)
   const syntheticSeedFile = buildThinkerSeedFile(normalized, options)
+  const fallbackFinalPrompt = toStringValue(options.finalPrompt).trim()
+  const finalSimulationRequirement = (
+    normalized.finalSimulationRequirement || fallbackFinalPrompt
+  )
 
   return createPendingUploadPayload({
     files: [...baseFiles, syntheticSeedFile],
-    simulationRequirement: normalized.finalSimulationRequirement,
+    simulationRequirement: finalSimulationRequirement,
     finalTopics: normalized.finalTopics,
     finalSeedText: normalized.finalSeedText,
-    finalSimulationRequirement: normalized.finalSimulationRequirement
+    finalSimulationRequirement
   })
 }
 
-export function buildScenarioThinkerPendingUploadPayload(draft = {}, options = {}) {
-  const baseFiles = normalizeFiles(options.baseFiles ?? options.files)
-  const generatedSeedText = toStringValue(
-    draft.generatedSeedText
-    ?? draft.enrichedSeedText
-    ?? draft.enriched_seed_text
-  )
-  const syntheticSeedFile = buildThinkerSeedFile({
-    finalSeedText: generatedSeedText
-  }, options)
+export function buildThinkerPendingUploadPayload(materialized, options = {}) {
+  return buildPendingUploadPayloadFromMaterialized(materialized, options)
+}
 
-  return createPendingUploadPayload({
-    files: [...baseFiles, syntheticSeedFile],
-    originalPrompt: draft.originalPrompt,
-    finalPrompt: draft.finalPrompt,
-    generatedSeedText,
-    expandedTopics: draft.expandedTopics ?? draft.expanded_topics
-  })
+export function buildScenarioThinkerPendingUploadPayload(materialized, options = {}) {
+  return buildPendingUploadPayloadFromMaterialized(materialized, options)
 }
 
 export const toThinkerDraft = hydrateThinkerDraft

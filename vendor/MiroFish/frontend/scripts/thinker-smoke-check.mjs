@@ -153,20 +153,49 @@ async function testScenarioThinkerDraftTracksPromptOwnership() {
   )
 }
 
-async function testScenarioPendingUploadUsesFinalPromptAndAdoptedSeed() {
-  const draft = createScenarioThinkerDraft({
-    originalPrompt: 'What happens to rates-sensitive assets?',
-    suggestedPrompt: 'Model rates-sensitive assets under a sticky inflation pause.',
-    finalPrompt: 'Focus on REITs and duration-sensitive equities.',
-    seedText: '# Final adopted seed'
-  })
+async function testScenarioPendingUploadUsesMaterializedPayloadContract() {
+  const materializedPayload = {
+    final_topics: [' Macro ', '', 'Rates'],
+    final_seed_text: '# Final adopted seed',
+    final_simulation_requirement: 'Focus on REITs and duration-sensitive equities.'
+  }
 
-  const pendingPayload = buildScenarioThinkerPendingUploadPayload(draft)
+  const pendingPayload = buildScenarioThinkerPendingUploadPayload(materializedPayload)
 
   assert.equal(
     pendingPayload.simulationRequirement,
     'Focus on REITs and duration-sensitive equities.',
-    'scenario pending upload should use the final adopted prompt downstream'
+    'scenario pending upload should use materialized final_simulation_requirement downstream'
+  )
+  assert.equal(
+    pendingPayload.finalSimulationRequirement,
+    'Focus on REITs and duration-sensitive equities.'
+  )
+  assert.deepEqual(pendingPayload.finalTopics, ['Macro', 'Rates'])
+  assert.equal(pendingPayload.finalSeedText, '# Final adopted seed')
+  assert.equal(pendingPayload.files.length, 1)
+  assert.equal(
+    await pendingPayload.files[0].text(),
+    '# Final adopted seed',
+    'scenario synthetic seed file should contain the materialized adopted seed text'
+  )
+}
+
+async function testScenarioPendingUploadFallsBackToExplicitFinalPromptWhenNeeded() {
+  const materializedPayload = {
+    final_topics: ['Rates'],
+    final_seed_text: '# Final adopted seed',
+    final_simulation_requirement: ''
+  }
+
+  const pendingPayload = buildScenarioThinkerPendingUploadPayload(materializedPayload, {
+    finalPrompt: 'Focus on REITs and duration-sensitive equities.'
+  })
+
+  assert.equal(
+    pendingPayload.simulationRequirement,
+    'Focus on REITs and duration-sensitive equities.',
+    'scenario pending upload should accept the explicit final prompt only as a fallback'
   )
   assert.equal(
     pendingPayload.finalSimulationRequirement,
@@ -295,7 +324,8 @@ async function main() {
   await testCreatePendingUploadPayloadForThinkerAdoption()
   await testScenarioThinkerJobPayloadUsesTopicOnlyMode()
   await testScenarioThinkerDraftTracksPromptOwnership()
-  await testScenarioPendingUploadUsesFinalPromptAndAdoptedSeed()
+  await testScenarioPendingUploadUsesMaterializedPayloadContract()
+  await testScenarioPendingUploadFallsBackToExplicitFinalPromptWhenNeeded()
   await testShouldPreservePolymarketThinkerSession()
   await testNormalizeThinkerAvailableActions()
   await testResolveThinkerPollErrorStateKeepsTransportFailureSeparate()
