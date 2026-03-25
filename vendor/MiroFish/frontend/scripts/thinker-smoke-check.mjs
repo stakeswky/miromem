@@ -6,7 +6,13 @@ if (typeof globalThis.File === 'undefined') {
 }
 
 const {
+  buildScenarioThinkerJobPayload,
+  buildScenarioThinkerMaterializePayload,
+  buildScenarioThinkerPendingUploadPayload,
   buildThinkerSeedFile,
+  createScenarioThinkerDraft,
+  deriveScenarioThinkerPollRecoveryState,
+  isScenarioThinkerDraftAdoptable,
   normalizeThinkerAvailableActions,
   normalizeThinkerMaterialized,
   resolveThinkerPollErrorState,
@@ -105,6 +111,177 @@ async function testCreatePendingUploadPayloadForThinkerAdoption() {
   assert.equal(payload.finalSimulationRequirement, 'final prompt')
   assert.deepEqual(payload.finalTopics, ['Macro', 'Rates'])
   assert.equal(payload.finalSeedText, '# Draft')
+}
+
+async function testScenarioThinkerJobPayloadUsesTopicOnlyMode() {
+  const payload = buildScenarioThinkerJobPayload({
+    scenarioDirection: 'Fed pause with sticky inflation',
+    scenarioPrompt: 'What happens to rates-sensitive assets?'
+  })
+
+  assert.equal(payload.mode, 'topic_only')
+  assert.equal(payload.research_direction, 'Fed pause with sticky inflation')
+  assert.equal(
+    Object.hasOwn(payload, 'simulationRequirement'),
+    false,
+    'scenario helper should only forward the direction into the topic_only Thinker job payload'
+  )
+}
+
+async function testScenarioFlowContractFromReadyDraftToPendingUpload() {
+  clearPendingUpload()
+
+  const originalPrompt = 'What happens to rates-sensitive assets?'
+  const suggestedPrompt = 'Model rates-sensitive assets under a sticky inflation pause.'
+  const adoptedPrompt = 'Focus on REITs and duration-sensitive equities.'
+
+  const draft = createScenarioThinkerDraft({
+    originalPrompt,
+    suggestedPrompt,
+    seedText: '# Expanded seed'
+  })
+
+  assert.equal(draft.originalPrompt, originalPrompt)
+  assert.equal(draft.suggestedPrompt, suggestedPrompt)
+  assert.equal(
+    draft.finalPrompt,
+    suggestedPrompt,
+    'ready drafts should default the adopted prompt to the Thinker suggestion'
+  )
+  assert.equal(draft.generatedSeedText, '# Expanded seed')
+  assert.equal(
+    isScenarioThinkerDraftAdoptable(draft),
+    true,
+    'scenario drafts should only become adoptable when both the seed and adopted prompt are present'
+  )
+  assert.throws(
+    () => {
+      draft.originalPrompt = 'mutated'
+    },
+    TypeError,
+    'originalPrompt should remain read-only'
+  )
+
+  draft.finalPrompt = adoptedPrompt
+
+  const materializePayload = buildScenarioThinkerMaterializePayload('job-scenario-1', draft)
+  assert.equal(materializePayload.job_id, 'job-scenario-1')
+  assert.equal(
+    materializePayload.adopted.suggested_simulation_prompt,
+    adoptedPrompt,
+    'scenario materialization should persist the final adopted prompt without fallback'
+  )
+  assert.equal(
+    materializePayload.adopted.enriched_seed_text,
+    '# Expanded seed',
+    'scenario materialization should persist the edited seed draft'
+  )
+
+  const pendingPayload = buildScenarioThinkerPendingUploadPayload({
+    final_topics: [' Macro ', '', 'Rates'],
+    final_seed_text: '# Final adopted seed',
+    final_simulation_requirement: 'backend should not override the adopted prompt'
+  }, {
+    finalPrompt: adoptedPrompt
+  })
+
+  setPendingUpload(pendingPayload)
+
+  const pending = getPendingUpload()
+  assert.equal(
+    pending.simulationRequirement,
+    adoptedPrompt,
+    'scenario downstream routing must use the final adopted prompt as the only truth'
+  )
+  assert.equal(pending.finalSimulationRequirement, adoptedPrompt)
+  assert.deepEqual(pending.finalTopics, ['Macro', 'Rates'])
+  assert.equal(pending.finalSeedText, '# Final adopted seed')
+  assert.equal(pending.files.length, 1)
+  assert.equal(
+    await pending.files[0].text(),
+    '# Final adopted seed',
+    'scenario synthetic seed file should contain the materialized adopted seed text'
+  )
+}
+
+async function testScenarioPendingUploadRejectsMalformedMaterializedPayload() {
+  assert.throws(
+    () => buildScenarioThinkerPendingUploadPayload(null, {
+      finalPrompt: 'Focus on REITs and duration-sensitive equities.'
+    }),
+    /must be an object/i,
+    'scenario pending upload should fail fast when materialized payload is not an object'
+  )
+
+  assert.throws(
+    () => buildScenarioThinkerPendingUploadPayload({
+      final_topics: ['Rates'],
+      final_seed_text: '   '
+    }, {
+      finalPrompt: 'Focus on REITs and duration-sensitive equities.'
+    }),
+    /final_seed_text/i,
+    'scenario pending upload should fail fast when final_seed_text is missing or empty'
+  )
+
+  assert.throws(
+    () => buildScenarioThinkerMaterializePayload('job-scenario-1', {
+      generatedSeedText: '# Expanded seed',
+      finalPrompt: '   '
+    }),
+    /finalPrompt/i,
+    'scenario materialization should fail fast when the adopted prompt is blank'
+  )
+
+  assert.equal(
+    isScenarioThinkerDraftAdoptable({
+      generatedSeedText: '   ',
+      finalPrompt: 'Focus on REITs and duration-sensitive equities.'
+    }),
+    false,
+    'scenario drafts with blank generated seed must not be adoptable'
+  )
+
+  assert.throws(
+    () => buildScenarioThinkerMaterializePayload('job-scenario-1', {
+      generatedSeedText: '   ',
+      finalPrompt: 'Focus on REITs and duration-sensitive equities.'
+    }),
+    /generatedSeedText/i,
+    'scenario materialization should fail fast when the adopted seed is blank'
+  )
+
+  assert.throws(
+    () => buildScenarioThinkerPendingUploadPayload({
+      final_topics: ['Rates'],
+      final_seed_text: '# Final adopted seed',
+      final_simulation_requirement: 'backend prompt'
+    }),
+    /finalPrompt/i,
+    'scenario pending upload should fail fast when the final adopted prompt is missing'
+  )
+}
+
+async function testScenarioPollRecoveryLeavesRegeneratePathAvailable() {
+  const recovered = await resolveThinkerPollErrorState(
+    'job-running',
+    async jobId => ({
+      job_id: jobId,
+      status: 'running',
+      available_actions: []
+    }),
+    new Error('network flake')
+  )
+
+  assert.deepEqual(
+    deriveScenarioThinkerPollRecoveryState(recovered),
+    {
+      status: 'error',
+      errorMessage: 'network flake。当前无法继续轮询，请重新生成。',
+      shouldClearDraft: false
+    },
+    'a recovered non-terminal scenario polling failure should surface a recoverable error state instead of trapping the UI in running'
+  )
 }
 
 async function testShouldPreservePolymarketThinkerSession() {
@@ -219,6 +396,10 @@ async function main() {
   await testNormalizeThenBuildSeedFileFlow()
   await testLegacyPendingUploadSignature()
   await testCreatePendingUploadPayloadForThinkerAdoption()
+  await testScenarioThinkerJobPayloadUsesTopicOnlyMode()
+  await testScenarioFlowContractFromReadyDraftToPendingUpload()
+  await testScenarioPendingUploadRejectsMalformedMaterializedPayload()
+  await testScenarioPollRecoveryLeavesRegeneratePathAvailable()
   await testShouldPreservePolymarketThinkerSession()
   await testNormalizeThinkerAvailableActions()
   await testResolveThinkerPollErrorStateKeepsTransportFailureSeparate()
