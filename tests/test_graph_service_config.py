@@ -131,6 +131,42 @@ async def test_structured_output_client_injects_json_hint_and_normalizes_entity_
     assert result == {"extracted_entities": [{"name": "Alice", "entity_type_id": 0}]}
 
 
+@pytest.mark.asyncio
+async def test_structured_output_client_normalizes_nested_entity_name_keys():
+    class FakeCompletions:
+        async def create(self, *, model, messages, temperature, max_tokens, response_format):
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content='{"extracted_entities":[{"entity_name":"Alice","entity_type_id":0}]}'
+                        )
+                    )
+                ]
+            )
+
+    fake_client = SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions()))
+    client = StructuredOutputCompatClient(
+        config=LLMConfig(
+            api_key="key",
+            base_url="https://coding.dashscope.aliyuncs.com/v1",
+            model="qwen3.5-plus",
+        ),
+        client=fake_client,
+    )
+
+    result = await client.generate_response(
+        [
+            Message(role="system", content="Extract entities from the content."),
+            Message(role="user", content="Alice discusses election forecasting."),
+        ],
+        response_model=ExtractedEntities,
+        prompt_name="test.extract_nodes.aliases",
+    )
+
+    assert result == {"extracted_entities": [{"name": "Alice", "entity_type_id": 0}]}
+
+
 def test_build_embedder_uses_openai_compatible_settings():
     settings = GraphServiceSettings(
         graph_embedding_api_key="key",

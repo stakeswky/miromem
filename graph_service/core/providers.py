@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, get_origin
+from typing import Any, get_args, get_origin
 
 from graphiti_core.cross_encoder.openai_reranker_client import OpenAIRerankerClient
 from graphiti_core.driver.falkordb_driver import FalkorDriver
@@ -66,7 +66,9 @@ class StructuredOutputCompatClient(OpenAIGenericClient):
 
         field_name, field_info = next(iter(model_fields.items()))
         if field_name in payload:
-            return payload
+            normalized = dict(payload)
+            normalized[field_name] = self._normalize_field_value(payload[field_name], field_info.annotation)
+            return normalized
 
         if isinstance(payload, list):
             return {field_name: payload}
@@ -84,13 +86,36 @@ class StructuredOutputCompatClient(OpenAIGenericClient):
         for candidate in alias_candidates:
             value = payload.get(candidate)
             if value is not None:
-                return {field_name: value}
+                return {field_name: self._normalize_field_value(value, field_info.annotation)}
 
         list_values = [value for value in payload.values() if isinstance(value, list)]
         if len(list_values) == 1 and get_origin(field_info.annotation) is list:
-            return {field_name: list_values[0]}
+            return {field_name: self._normalize_field_value(list_values[0], field_info.annotation)}
 
         return payload
+
+    def _normalize_field_value(self, value: Any, annotation: Any) -> Any:
+        origin = get_origin(annotation)
+        args = get_args(annotation)
+        if origin is list and args and isinstance(value, list):
+            item_model = args[0]
+            if isinstance(item_model, type) and issubclass(item_model, BaseModel):
+                return [
+                    self._normalize_model_dict(item, item_model) if isinstance(item, dict) else item
+                    for item in value
+                ]
+        return value
+
+    def _normalize_model_dict(self, payload: dict[str, Any], model: type[BaseModel]) -> dict[str, Any]:
+        normalized = dict(payload)
+        for field_name in model.model_fields:
+            if field_name in normalized:
+                continue
+            for candidate in _alias_candidates(field_name):
+                if candidate in normalized:
+                    normalized[field_name] = normalized.pop(candidate)
+                    break
+        return normalized
 
 
 def _to_camel_case(value: str) -> str:
@@ -98,6 +123,21 @@ def _to_camel_case(value: str) -> str:
     if not parts:
         return value
     return parts[0] + "".join(part.capitalize() for part in parts[1:])
+
+
+def _alias_candidates(field_name: str) -> list[str]:
+    candidates = [
+        field_name,
+        field_name.replace("_", ""),
+        _to_camel_case(field_name),
+    ]
+    if field_name == "name":
+        candidates.extend(["entity_name", "node_name"])
+    if field_name == "source_entity_name":
+        candidates.extend(["source_name", "source"])
+    if field_name == "target_entity_name":
+        candidates.extend(["target_name", "target"])
+    return candidates
 
 
 def build_graph_driver(settings: GraphServiceSettings) -> FalkorDriver:
