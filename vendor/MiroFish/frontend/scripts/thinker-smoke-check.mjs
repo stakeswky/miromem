@@ -11,6 +11,8 @@ const {
   buildScenarioThinkerPendingUploadPayload,
   buildThinkerSeedFile,
   createScenarioThinkerDraft,
+  deriveScenarioThinkerPollRecoveryState,
+  isScenarioThinkerDraftAdoptable,
   normalizeThinkerAvailableActions,
   normalizeThinkerMaterialized,
   resolveThinkerPollErrorState,
@@ -147,6 +149,11 @@ async function testScenarioFlowContractFromReadyDraftToPendingUpload() {
     'ready drafts should default the adopted prompt to the Thinker suggestion'
   )
   assert.equal(draft.generatedSeedText, '# Expanded seed')
+  assert.equal(
+    isScenarioThinkerDraftAdoptable(draft),
+    true,
+    'scenario drafts should only become adoptable when both the seed and adopted prompt are present'
+  )
   assert.throws(
     () => {
       draft.originalPrompt = 'mutated'
@@ -226,6 +233,24 @@ async function testScenarioPendingUploadRejectsMalformedMaterializedPayload() {
     'scenario materialization should fail fast when the adopted prompt is blank'
   )
 
+  assert.equal(
+    isScenarioThinkerDraftAdoptable({
+      generatedSeedText: '   ',
+      finalPrompt: 'Focus on REITs and duration-sensitive equities.'
+    }),
+    false,
+    'scenario drafts with blank generated seed must not be adoptable'
+  )
+
+  assert.throws(
+    () => buildScenarioThinkerMaterializePayload('job-scenario-1', {
+      generatedSeedText: '   ',
+      finalPrompt: 'Focus on REITs and duration-sensitive equities.'
+    }),
+    /generatedSeedText/i,
+    'scenario materialization should fail fast when the adopted seed is blank'
+  )
+
   assert.throws(
     () => buildScenarioThinkerPendingUploadPayload({
       final_topics: ['Rates'],
@@ -234,6 +259,28 @@ async function testScenarioPendingUploadRejectsMalformedMaterializedPayload() {
     }),
     /finalPrompt/i,
     'scenario pending upload should fail fast when the final adopted prompt is missing'
+  )
+}
+
+async function testScenarioPollRecoveryLeavesRegeneratePathAvailable() {
+  const recovered = await resolveThinkerPollErrorState(
+    'job-running',
+    async jobId => ({
+      job_id: jobId,
+      status: 'running',
+      available_actions: []
+    }),
+    new Error('network flake')
+  )
+
+  assert.deepEqual(
+    deriveScenarioThinkerPollRecoveryState(recovered),
+    {
+      status: 'error',
+      errorMessage: 'network flake。当前无法继续轮询，请重新生成。',
+      shouldClearDraft: false
+    },
+    'a recovered non-terminal scenario polling failure should surface a recoverable error state instead of trapping the UI in running'
   )
 }
 
@@ -352,6 +399,7 @@ async function main() {
   await testScenarioThinkerJobPayloadUsesTopicOnlyMode()
   await testScenarioFlowContractFromReadyDraftToPendingUpload()
   await testScenarioPendingUploadRejectsMalformedMaterializedPayload()
+  await testScenarioPollRecoveryLeavesRegeneratePathAvailable()
   await testShouldPreservePolymarketThinkerSession()
   await testNormalizeThinkerAvailableActions()
   await testResolveThinkerPollErrorStateKeepsTransportFailureSeparate()

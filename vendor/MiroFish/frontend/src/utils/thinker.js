@@ -322,6 +322,16 @@ export function buildThinkerMaterializePayload(jobId, draft = {}) {
   }
 }
 
+const requireScenarioGeneratedSeedText = (value, context) => {
+  const generatedSeedText = toStringValue(value).trim()
+
+  if (generatedSeedText === '') {
+    throw new Error(`${context} requires a non-empty generatedSeedText`)
+  }
+
+  return generatedSeedText
+}
+
 const requireScenarioFinalPrompt = (value, context) => {
   const finalPrompt = toStringValue(value).trim()
 
@@ -332,7 +342,31 @@ const requireScenarioFinalPrompt = (value, context) => {
   return finalPrompt
 }
 
+export function isScenarioThinkerDraftAdoptable(draft = {}) {
+  const generatedSeedText = toStringValue(
+    draft?.generatedSeedText
+    ?? draft?.enrichedSeedText
+    ?? draft?.enriched_seed_text
+  ).trim()
+  const finalPrompt = toStringValue(
+    draft?.finalPrompt
+    ?? draft?.final_prompt
+    ?? draft?.finalSimulationPrompt
+    ?? draft?.final_simulation_prompt
+    ?? draft?.finalSimulationRequirement
+    ?? draft?.final_simulation_requirement
+  ).trim()
+
+  return generatedSeedText !== '' && finalPrompt !== ''
+}
+
 export function buildScenarioThinkerMaterializePayload(jobId, draft = {}) {
+  const generatedSeedText = requireScenarioGeneratedSeedText(
+    draft?.generatedSeedText
+    ?? draft?.enrichedSeedText
+    ?? draft?.enriched_seed_text,
+    'Scenario Thinker materialize payload'
+  )
   const finalPrompt = requireScenarioFinalPrompt(
     draft?.finalPrompt
     ?? draft?.final_prompt
@@ -345,8 +379,28 @@ export function buildScenarioThinkerMaterializePayload(jobId, draft = {}) {
 
   return buildThinkerMaterializePayload(jobId, {
     ...draft,
+    generatedSeedText,
     finalPrompt
   })
+}
+
+export function deriveScenarioThinkerPollRecoveryState(recoveredState = {}) {
+  const transportErrorMessage = toStringValue(recoveredState?.errorMessage).trim()
+  const fallbackMessage = transportErrorMessage || 'Thinker 轮询失败'
+
+  if (recoveredState?.job && !recoveredState?.isTerminal) {
+    return {
+      status: 'error',
+      errorMessage: `${fallbackMessage}。当前无法继续轮询，请重新生成。`,
+      shouldClearDraft: false
+    }
+  }
+
+  return {
+    status: 'error',
+    errorMessage: fallbackMessage,
+    shouldClearDraft: false
+  }
 }
 
 export function shouldPreservePolymarketThinkerSession(options = {}) {

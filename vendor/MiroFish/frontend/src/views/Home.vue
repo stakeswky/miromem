@@ -640,8 +640,10 @@ import {
   buildThinkerMaterializePayload,
   buildThinkerPendingUploadPayload,
   createScenarioThinkerDraft,
+  deriveScenarioThinkerPollRecoveryState,
   extractThinkerErrorMessage,
   hydrateThinkerDraft,
+  isScenarioThinkerDraftAdoptable,
   normalizeThinkerAvailableActions,
   normalizeThinkerJobState,
   pollThinkerJobUntilTerminal,
@@ -780,7 +782,7 @@ const scenarioOriginalPrompt = computed(() => (
 const scenarioCanAdopt = computed(() => (
   scenarioThinkerStatus.value === 'ready' &&
   scenarioThinkerJobId.value !== '' &&
-  scenarioThinkerDraft.value.finalPrompt.trim() !== ''
+  isScenarioThinkerDraftAdoptable(scenarioThinkerDraft.value)
 ))
 
 const scenarioCanRegenerate = computed(() => (
@@ -1322,21 +1324,20 @@ const pollScenarioThinkerJob = async (jobId) => {
   } catch (err) {
     const recoveredState = await resolveThinkerPollErrorState(jobId, getThinkerJob, err)
 
-    if (recoveredState.job) {
+    if (recoveredState.job && recoveredState.isTerminal) {
       applyScenarioThinkerJobState(recoveredState.job, {
-        preserveError: !recoveredState.isTerminal
+        preserveError: false
       })
-
-      if (!recoveredState.isTerminal) {
-        scenarioThinkerStatus.value = 'running'
-        scenarioThinkerError.value = recoveredState.errorMessage
-      }
 
       return recoveredState.job
     }
 
-    scenarioThinkerStatus.value = 'error'
-    scenarioThinkerError.value = recoveredState.errorMessage
+    const recoveryState = deriveScenarioThinkerPollRecoveryState(recoveredState)
+    scenarioThinkerStatus.value = recoveryState.status
+    scenarioThinkerError.value = recoveryState.errorMessage
+    if (recoveryState.shouldClearDraft) {
+      scenarioThinkerDraft.value = createEmptyScenarioDraft()
+    }
     return null
   }
 }
@@ -1375,7 +1376,11 @@ const startScenarioThinker = async () => {
 }
 
 const adoptScenarioThinkerResult = async () => {
-  if (!scenarioCanAdopt.value) return
+  if (scenarioThinkerStatus.value !== 'ready' || !scenarioThinkerJobId.value) return
+  if (!isScenarioThinkerDraftAdoptable(scenarioThinkerDraft.value)) {
+    scenarioThinkerError.value = '生成现实种子和最终采用提示词不能为空，请补全后再试。'
+    return
+  }
 
   loading.value = true
   scenarioThinkerError.value = ''
@@ -1387,8 +1392,6 @@ const adoptScenarioThinkerResult = async () => {
         scenarioThinkerDraft.value
       )
     )
-
-    scenarioThinkerStatus.value = 'materialized'
 
     const pendingPayload = buildScenarioThinkerPendingUploadPayload(response?.payload, {
       finalPrompt: scenarioThinkerDraft.value.finalPrompt
