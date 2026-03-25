@@ -6,7 +6,10 @@ if (typeof globalThis.File === 'undefined') {
 }
 
 const {
+  buildScenarioThinkerJobPayload,
+  buildScenarioThinkerPendingUploadPayload,
   buildThinkerSeedFile,
+  createScenarioThinkerDraft,
   normalizeThinkerAvailableActions,
   normalizeThinkerMaterialized,
   resolveThinkerPollErrorState,
@@ -105,6 +108,77 @@ async function testCreatePendingUploadPayloadForThinkerAdoption() {
   assert.equal(payload.finalSimulationRequirement, 'final prompt')
   assert.deepEqual(payload.finalTopics, ['Macro', 'Rates'])
   assert.equal(payload.finalSeedText, '# Draft')
+}
+
+async function testScenarioThinkerJobPayloadUsesTopicOnlyMode() {
+  const payload = buildScenarioThinkerJobPayload({
+    scenarioDirection: 'Fed pause with sticky inflation',
+    scenarioPrompt: 'What happens to rates-sensitive assets?'
+  })
+
+  assert.equal(payload.mode, 'topic_only')
+  assert.equal(payload.research_direction, 'Fed pause with sticky inflation')
+  assert.equal(
+    Object.hasOwn(payload, 'simulationRequirement'),
+    false,
+    'scenario helper should only forward the direction into the topic_only Thinker job payload'
+  )
+}
+
+async function testScenarioThinkerDraftTracksPromptOwnership() {
+  const draft = createScenarioThinkerDraft({
+    originalPrompt: 'What happens to rates-sensitive assets?',
+    suggestedPrompt: 'Model rates-sensitive assets under a sticky inflation pause.',
+    finalPrompt: 'Focus on REITs and duration-sensitive equities.',
+    seedText: '# Expanded seed'
+  })
+
+  assert.equal(draft.originalPrompt, 'What happens to rates-sensitive assets?')
+  assert.equal(
+    draft.suggestedPrompt,
+    'Model rates-sensitive assets under a sticky inflation pause.'
+  )
+  assert.equal(
+    draft.finalPrompt,
+    'Focus on REITs and duration-sensitive equities.',
+    'finalPrompt should stay distinct from both the original and Thinker-suggested prompts'
+  )
+  assert.equal(draft.generatedSeedText, '# Expanded seed')
+  assert.throws(
+    () => {
+      draft.originalPrompt = 'mutated'
+    },
+    TypeError,
+    'originalPrompt should remain read-only'
+  )
+}
+
+async function testScenarioPendingUploadUsesFinalPromptAndAdoptedSeed() {
+  const draft = createScenarioThinkerDraft({
+    originalPrompt: 'What happens to rates-sensitive assets?',
+    suggestedPrompt: 'Model rates-sensitive assets under a sticky inflation pause.',
+    finalPrompt: 'Focus on REITs and duration-sensitive equities.',
+    seedText: '# Final adopted seed'
+  })
+
+  const pendingPayload = buildScenarioThinkerPendingUploadPayload(draft)
+
+  assert.equal(
+    pendingPayload.simulationRequirement,
+    'Focus on REITs and duration-sensitive equities.',
+    'scenario pending upload should use the final adopted prompt downstream'
+  )
+  assert.equal(
+    pendingPayload.finalSimulationRequirement,
+    'Focus on REITs and duration-sensitive equities.'
+  )
+  assert.equal(pendingPayload.finalSeedText, '# Final adopted seed')
+  assert.equal(pendingPayload.files.length, 1)
+  assert.equal(
+    await pendingPayload.files[0].text(),
+    '# Final adopted seed',
+    'scenario synthetic seed file should contain the adopted seed text'
+  )
 }
 
 async function testShouldPreservePolymarketThinkerSession() {
@@ -219,6 +293,9 @@ async function main() {
   await testNormalizeThenBuildSeedFileFlow()
   await testLegacyPendingUploadSignature()
   await testCreatePendingUploadPayloadForThinkerAdoption()
+  await testScenarioThinkerJobPayloadUsesTopicOnlyMode()
+  await testScenarioThinkerDraftTracksPromptOwnership()
+  await testScenarioPendingUploadUsesFinalPromptAndAdoptedSeed()
   await testShouldPreservePolymarketThinkerSession()
   await testNormalizeThinkerAvailableActions()
   await testResolveThinkerPollErrorStateKeepsTransportFailureSeparate()

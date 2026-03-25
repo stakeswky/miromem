@@ -1,3 +1,5 @@
+import { createPendingUploadPayload } from '../store/pendingUpload.js'
+
 const TERMINAL_STATUSES = new Set([
   'succeeded',
   'failed',
@@ -53,6 +55,17 @@ const normalizePolymarketEvent = event => (
 )
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
+
+const defineReadOnlyValue = (target, key, value) => {
+  Object.defineProperty(target, key, {
+    value,
+    enumerable: true,
+    writable: false,
+    configurable: false
+  })
+
+  return target
+}
 
 export const THINKER_TERMINAL_STATUSES = Object.freeze([...TERMINAL_STATUSES])
 
@@ -226,6 +239,15 @@ export function buildThinkerJobPayload(options = {}) {
   return payload
 }
 
+export function buildScenarioThinkerJobPayload(options = {}) {
+  return buildThinkerJobPayload({
+    mode: 'topic_only',
+    researchDirection: toStringValue(
+      options.scenarioDirection ?? options.researchDirection ?? options.direction
+    ).trim()
+  })
+}
+
 export function buildThinkerSeedFile(materialized, options = {}) {
   const normalized = normalizeThinkerMaterialized(materialized)
   const fileName = toStringValue(options.fileName).trim() || DEFAULT_SEED_FILE_NAME
@@ -244,16 +266,57 @@ export function hydrateThinkerDraft(result = {}) {
   }
 }
 
+export function createScenarioThinkerDraft(options = {}) {
+  const thinkerDraft = hydrateThinkerDraft({
+    expanded_topics: options.expandedTopics ?? options.expanded_topics,
+    enriched_seed_text: (
+      options.generatedSeedText
+      ?? options.seedText
+      ?? options.enrichedSeedText
+      ?? options.enriched_seed_text
+    ),
+    suggested_simulation_prompt: (
+      options.suggestedPrompt
+      ?? options.suggestedSimulationPrompt
+      ?? options.suggested_simulation_prompt
+    )
+  })
+  const originalPrompt = toStringValue(options.originalPrompt)
+  const explicitFinalPrompt = (
+    options.finalPrompt
+    ?? options.final_prompt
+    ?? options.finalSimulationPrompt
+    ?? options.final_simulation_prompt
+    ?? options.finalSimulationRequirement
+    ?? options.final_simulation_requirement
+  )
+  const finalPrompt = explicitFinalPrompt != null
+    ? toStringValue(explicitFinalPrompt)
+    : (thinkerDraft.suggestedSimulationPrompt || originalPrompt)
+
+  return defineReadOnlyValue({
+    ...thinkerDraft,
+    generatedSeedText: thinkerDraft.enrichedSeedText,
+    suggestedPrompt: thinkerDraft.suggestedSimulationPrompt,
+    finalPrompt
+  }, 'originalPrompt', originalPrompt)
+}
+
 export function buildThinkerMaterializePayload(jobId, draft = {}) {
   return {
     job_id: toStringValue(jobId).trim(),
     adopted: {
       expanded_topics: normalizeTopics(draft?.expandedTopics ?? draft?.expanded_topics),
       enriched_seed_text: toStringValue(
-        draft?.enrichedSeedText ?? draft?.enriched_seed_text
+        draft?.generatedSeedText
+        ?? draft?.enrichedSeedText
+        ?? draft?.enriched_seed_text
       ),
       suggested_simulation_prompt: toStringValue(
-        draft?.suggestedSimulationPrompt ?? draft?.suggested_simulation_prompt
+        draft?.finalPrompt
+        ?? draft?.suggestedPrompt
+        ?? draft?.suggestedSimulationPrompt
+        ?? draft?.suggested_simulation_prompt
       )
     }
   }
@@ -283,13 +346,33 @@ export function buildThinkerPendingUploadPayload(materialized, options = {}) {
   const baseFiles = normalizeFiles(options.baseFiles ?? options.files)
   const syntheticSeedFile = buildThinkerSeedFile(normalized, options)
 
-  return {
+  return createPendingUploadPayload({
     files: [...baseFiles, syntheticSeedFile],
     simulationRequirement: normalized.finalSimulationRequirement,
     finalTopics: normalized.finalTopics,
     finalSeedText: normalized.finalSeedText,
     finalSimulationRequirement: normalized.finalSimulationRequirement
-  }
+  })
+}
+
+export function buildScenarioThinkerPendingUploadPayload(draft = {}, options = {}) {
+  const baseFiles = normalizeFiles(options.baseFiles ?? options.files)
+  const generatedSeedText = toStringValue(
+    draft.generatedSeedText
+    ?? draft.enrichedSeedText
+    ?? draft.enriched_seed_text
+  )
+  const syntheticSeedFile = buildThinkerSeedFile({
+    finalSeedText: generatedSeedText
+  }, options)
+
+  return createPendingUploadPayload({
+    files: [...baseFiles, syntheticSeedFile],
+    originalPrompt: draft.originalPrompt,
+    finalPrompt: draft.finalPrompt,
+    generatedSeedText,
+    expandedTopics: draft.expandedTopics ?? draft.expanded_topics
+  })
 }
 
 export const toThinkerDraft = hydrateThinkerDraft

@@ -50,8 +50,13 @@ const isPendingUploadPayload = value => (
   (
     'files' in value ||
     'simulationRequirement' in value ||
+    'originalPrompt' in value ||
+    'finalPrompt' in value ||
     'finalTopics' in value ||
+    'expandedTopics' in value ||
     'finalSeedText' in value ||
+    'generatedSeedText' in value ||
+    'enrichedSeedText' in value ||
     'finalSimulationRequirement' in value
   )
 )
@@ -59,16 +64,26 @@ const isPendingUploadPayload = value => (
 const normalizePendingUpload = (filesOrPayload, requirement) => {
   if (isPendingUploadPayload(filesOrPayload)) {
     const files = normalizeFiles(filesOrPayload.files)
-    const fallbackRequirement = toStringValue(filesOrPayload.simulationRequirement)
+    const fallbackRequirement = toStringValue(
+      filesOrPayload.simulationRequirement ?? filesOrPayload.originalPrompt
+    )
     const finalSimulationRequirement = toStringValue(
-      filesOrPayload.finalSimulationRequirement ?? fallbackRequirement
+      filesOrPayload.finalPrompt
+      ?? filesOrPayload.finalSimulationRequirement
+      ?? fallbackRequirement
     )
 
     return {
       files,
       simulationRequirement: finalSimulationRequirement,
-      finalTopics: normalizeTopics(filesOrPayload.finalTopics),
-      finalSeedText: toStringValue(filesOrPayload.finalSeedText),
+      finalTopics: normalizeTopics(
+        filesOrPayload.finalTopics ?? filesOrPayload.expandedTopics
+      ),
+      finalSeedText: toStringValue(
+        filesOrPayload.finalSeedText
+        ?? filesOrPayload.generatedSeedText
+        ?? filesOrPayload.enrichedSeedText
+      ),
       finalSimulationRequirement,
       isPending: files.length > 0
     }
